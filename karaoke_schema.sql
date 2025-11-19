@@ -4,65 +4,65 @@
 /*==============================================================*/
 
 
-drop index CUSTOMER_PK;
+drop index IF EXISTS CUSTOMER_PK;
 
-drop table CUSTOMER;
+drop table IF EXISTS CUSTOMER;
 
-drop index MEMBER_PK;
+drop index IF EXISTS MEMBER_PK;
 
-drop table MEMBER;
+drop table IF EXISTS MEMBER;
 
-drop index PAYMENT_PK;
+drop index IF EXISTS PAYMENT_PK;
 
-drop table PAYMENT;
+drop table IF EXISTS PAYMENT;
 
-drop index PICK_FK;
+drop index IF EXISTS PICK_FK;
 
-drop index PICK2_FK;
+drop index IF EXISTS PICK2_FK;
 
-drop table PICK;
+drop table IF EXISTS PICK;
 
-drop index RESULTS_PAYMENT_REGISTRATION_FK;
+drop index IF EXISTS RESULTS_PAYMENT_REGISTRATION_FK;
 
-drop index MAKE_REGISTRATION_FK;
+drop index IF EXISTS MAKE_REGISTRATION_FK;
 
-drop index REGISTRATION_PK;
+drop index IF EXISTS REGISTRATION_PK;
 
-drop table REGISTRATION;
+drop table IF EXISTS REGISTRATION;
 
-drop index RESULTS_PAYMENT_RESERVATION_FK;
+drop index IF EXISTS RESULTS_PAYMENT_RESERVATION_FK;
 
-drop index MAKE_RESERVATION_FK;
+drop index IF EXISTS MAKE_RESERVATION_FK;
 
-drop index RESERVATION_PK;
+drop index IF EXISTS RESERVATION_PK;
 
-drop table RESERVATION;
+drop table IF EXISTS RESERVATION;
 
-drop index ASSIGNED_FOR_REGISTRATION_FK;
+drop index IF EXISTS ASSIGNED_FOR_REGISTRATION_FK;
 
-drop index ASSIGNED_FOR_RESERVATION_FK;
+drop index IF EXISTS ASSIGNED_FOR_RESERVATION_FK;
 
-drop index ROOM_PK;
+drop index IF EXISTS ROOM_PK;
 
-drop table ROOM;
+drop table IF EXISTS ROOM;
 
-drop index SONGS_PK;
+drop index IF EXISTS SONGS_PK;
 
-drop table SONGS;
+drop table IF EXISTS SONGS;
 
-drop index RECORDED_IN_FK;
+drop index IF EXISTS RECORDED_IN_FK;
 
-drop index SONG_ACTIVITIES_PK;
+drop index IF EXISTS SONG_ACTIVITIES_PK;
 
-drop table SONG_ACTIVITIES;
+drop table IF EXISTS SONG_ACTIVITIES;
 
-drop index REG_HAS_EXTENSION_FK;
+drop index IF EXISTS REG_HAS_EXTENSION_FK;
 
-drop index RES_HAS_EXTENSION_FK;
+drop index IF EXISTS RES_HAS_EXTENSION_FK;
 
-drop index TIME_EXTEND_PK;
+drop index IF EXISTS TIME_EXTEND_PK;
 
-drop table TIME_EXTEND;
+drop table IF EXISTS TIME_EXTEND;
 
 /*==============================================================*/
 /* Table: CUSTOMER                                              */
