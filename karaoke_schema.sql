@@ -6,21 +6,21 @@
 
 drop index IF EXISTS CUSTOMER_PK;
 
-drop table IF EXISTS CUSTOMER;
+drop table IF EXISTS CUSTOMER CASCADE;
 
 drop index IF EXISTS MEMBER_PK;
 
-drop table IF EXISTS MEMBER;
+drop table IF EXISTS MEMBER CASCADE;
 
 drop index IF EXISTS PAYMENT_PK;
 
-drop table IF EXISTS PAYMENT;
+drop table IF EXISTS PAYMENT CASCADE;
 
 drop index IF EXISTS PICK_FK;
 
 drop index IF EXISTS PICK2_FK;
 
-drop table IF EXISTS PICK;
+drop table IF EXISTS PICK CASCADE;
 
 drop index IF EXISTS RESULTS_PAYMENT_REGISTRATION_FK;
 
@@ -28,7 +28,7 @@ drop index IF EXISTS MAKE_REGISTRATION_FK;
 
 drop index IF EXISTS REGISTRATION_PK;
 
-drop table IF EXISTS REGISTRATION;
+drop table IF EXISTS REGISTRATION CASCADE;
 
 drop index IF EXISTS RESULTS_PAYMENT_RESERVATION_FK;
 
@@ -36,7 +36,7 @@ drop index IF EXISTS MAKE_RESERVATION_FK;
 
 drop index IF EXISTS RESERVATION_PK;
 
-drop table IF EXISTS RESERVATION;
+drop table IF EXISTS RESERVATION CASCADE;
 
 drop index IF EXISTS ASSIGNED_FOR_REGISTRATION_FK;
 
@@ -44,17 +44,17 @@ drop index IF EXISTS ASSIGNED_FOR_RESERVATION_FK;
 
 drop index IF EXISTS ROOM_PK;
 
-drop table IF EXISTS ROOM;
+drop table IF EXISTS ROOM CASCADE;
 
 drop index IF EXISTS SONGS_PK;
 
-drop table IF EXISTS SONGS;
+drop table IF EXISTS SONGS CASCADE;
 
 drop index IF EXISTS RECORDED_IN_FK;
 
 drop index IF EXISTS SONG_ACTIVITIES_PK;
 
-drop table IF EXISTS SONG_ACTIVITIES;
+drop table IF EXISTS SONG_ACTIVITIES CASCADE;
 
 drop index IF EXISTS REG_HAS_EXTENSION_FK;
 
@@ -62,7 +62,7 @@ drop index IF EXISTS RES_HAS_EXTENSION_FK;
 
 drop index IF EXISTS TIME_EXTEND_PK;
 
-drop table IF EXISTS TIME_EXTEND;
+drop table IF EXISTS TIME_EXTEND CASCADE;
 
 /*==============================================================*/
 /* Table: CUSTOMER                                              */
@@ -86,7 +86,7 @@ CUSTOMER_ID
 /* Table: MEMBER                                                */
 /*==============================================================*/
 create table MEMBER (
-   CUSTOMER_ID          SERIAL               not null,
+   CUSTOMER_ID          INT4                 not null,
    MEMBER_STATUS        VARCHAR(9)           null,
    NUMBER_OF_VISITS     INT4                 null,
    DISCOUNT_MEMBER      FLOAT8               null,
@@ -105,7 +105,7 @@ CUSTOMER_ID
 /*==============================================================*/
 create table PAYMENT (
    PAYMENT_ID           SERIAL               not null,
-   PAYMENT_TIME         DATE                 null,
+   PAYMENT_TIME         TIMESTAMP            null,
    PAYMENT_METHOD       VARCHAR(10)          null,
    TOTAL_COST           NUMERIC(8,2)         null,
    DISCOUNT_MEMBER      FLOAT8               null,
@@ -147,20 +147,20 @@ SONGS_ID
 /*==============================================================*/
 create table REGISTRATION (
    CUSTOMER_ID          INT4                 not null,
-   ID_TRANSAKSI2        SERIAL               not null,
+   REGISTRATION_ID      SERIAL               not null,
    PAYMENT_ID           INT4                 not null,
    DATE                 DATE                 null,
-   START_TIME           DATE                 null,
-   END_TIME             DATE                 null,
+   START_TIME           TIMESTAMP            null,
+   END_TIME             TIMESTAMP            null,
    REGISTRATION_STATUS  VARCHAR(20)          null,
-   constraint PK_REGISTRATION primary key (ID_TRANSAKSI2)
+   constraint PK_REGISTRATION primary key (REGISTRATION_ID)
 );
 
 /*==============================================================*/
 /* Index: REGISTRATION_PK                                       */
 /*==============================================================*/
 create unique index REGISTRATION_PK on REGISTRATION (
-ID_TRANSAKSI2
+REGISTRATION_ID
 );
 
 /*==============================================================*/
@@ -219,21 +219,21 @@ PAYMENT_ID
 /* Table: ROOM                                                  */
 /*==============================================================*/
 create table ROOM (
-   ID_TRANSAKSI2        INT4                 not null,
-   RESERVATION_ID       INT4                 not null,
-   PAYMENT_ID2          SERIAL               not null,
+   REGISTRATION_ID      INT4                 null,
+   RESERVATION_ID       INT4                 null,
+   ROOM_ID              SERIAL               not null,
    ROOM_TYPE            VARCHAR(10)          null,
    CAPACITTY            INT4                 null,
    HOURLY_RATE          NUMERIC(8,2)         null,
    STATUS               VARCHAR(20)          null,
-   constraint PK_ROOM primary key (PAYMENT_ID2)
+   constraint PK_ROOM primary key (ROOM_ID)
 );
 
 /*==============================================================*/
 /* Index: ROOM_PK                                               */
 /*==============================================================*/
 create unique index ROOM_PK on ROOM (
-PAYMENT_ID2
+ROOM_ID
 );
 
 /*==============================================================*/
@@ -247,7 +247,7 @@ RESERVATION_ID
 /* Index: ASSIGNED_FOR_REGISTRATION_FK                          */
 /*==============================================================*/
 create  index ASSIGNED_FOR_REGISTRATION_FK on ROOM (
-ID_TRANSAKSI2
+REGISTRATION_ID
 );
 
 /*==============================================================*/
@@ -276,8 +276,8 @@ SONGS_ID
 /*==============================================================*/
 create table SONG_ACTIVITIES (
    ACTIVITY_ID          SERIAL               not null,
-   CUSTOMER_ID          CHAR(10)             not null,
-   SONG_START_TIME      DATE                 null,
+   CUSTOMER_ID          INT4                 not null,
+   SONG_START_TIME      TIMESTAMP            null,
    PLAYED_DURATION      TIME                 null,
    PLAYED_PERCENTAGE    FLOAT8               null,
    constraint PK_SONG_ACTIVITIES primary key (ACTIVITY_ID)
@@ -301,8 +301,8 @@ CUSTOMER_ID
 /* Table: TIME_EXTEND                                           */
 /*==============================================================*/
 create table TIME_EXTEND (
-   ID_TRANSAKSI2        INT4                 not null,
-   RESERVATION_ID       INT4                 not null,
+   REGISTRATION_ID      INT4                 null,
+   RESERVATION_ID       INT4                 null,
    EXTEND_ID            SERIAL               not null,
    EXTENSION_DURATION   TIME                 null,
    EXTENSION_COST       NUMERIC(8,2)         null,
@@ -327,7 +327,7 @@ RESERVATION_ID
 /* Index: REG_HAS_EXTENSION_FK                                  */
 /*==============================================================*/
 create  index REG_HAS_EXTENSION_FK on TIME_EXTEND (
-ID_TRANSAKSI2
+REGISTRATION_ID
 );
 
 alter table MEMBER
@@ -366,8 +366,8 @@ alter table RESERVATION
       on delete restrict on update restrict;
 
 alter table ROOM
-   add constraint FK_ROOM_ASSIGNED__REGISTRA foreign key (ID_TRANSAKSI2)
-      references REGISTRATION (ID_TRANSAKSI2)
+   add constraint FK_ROOM_ASSIGNED__REGISTRA foreign key (REGISTRATION_ID)
+      references REGISTRATION (REGISTRATION_ID)
       on delete restrict on update restrict;
 
 alter table ROOM
@@ -381,8 +381,8 @@ alter table SONG_ACTIVITIES
       on delete restrict on update restrict;
 
 alter table TIME_EXTEND
-   add constraint FK_TIME_EXT_REG_HAS_E_REGISTRA foreign key (ID_TRANSAKSI2)
-      references REGISTRATION (ID_TRANSAKSI2)
+   add constraint FK_TIME_EXT_REG_HAS_E_REGISTRA foreign key (REGISTRATION_ID)
+      references REGISTRATION (REGISTRATION_ID)
       on delete restrict on update restrict;
 
 alter table TIME_EXTEND
