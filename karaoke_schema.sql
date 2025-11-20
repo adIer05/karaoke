@@ -409,16 +409,16 @@ INSERT INTO CUSTOMER (NO_PHONE, NAME, PEOPLE_COMING) VALUES
 -- INSERT INTO MEMBER (10)
 -- ===========================
 INSERT INTO MEMBER (CUSTOMER_ID, MEMBER_STATUS, NUMBER_OF_VISITS, DISCOUNT_MEMBER) VALUES
-(1, 'ACTIVE', 5, 0.10),
-(2, 'ACTIVE', 7, 0.15),
-(3, 'INACTIVE', 1, 0.00),
-(4, 'ACTIVE', 10, 0.20),
-(5, 'ACTIVE', 3, 0.05),
-(6, 'INACTIVE', 0, 0.00),
-(7, 'ACTIVE', 12, 0.25),
-(8, 'ACTIVE', 4, 0.10),
-(9, 'INACTIVE', 2, 0.00),
-(10,'ACTIVE', 8, 0.15);
+(1,'Silver',5,0.05),
+(2,'Gold',15,0.10),
+(3,'INACTIVE',0,0.00),
+(4,'Platinum',30,0.15),
+(5,'Gold',16,0.10),
+(6,'Silver',6,0.05),
+(7,'INACTIVE',0,0.00),
+(8,'Silver',5,0.05),
+(9,'Gold',20,0.10),
+(10,'Platinum',31,0.15);
 
 -- ===========================
 -- INSERT INTO PAYMENT (10)
