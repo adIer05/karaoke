@@ -1,5 +1,5 @@
 /*==============================================================*/
-/*                            sopi                              */
+/*                             sopi                             */
 /*==============================================================*/
 
 drop index IF EXISTS CUSTOMER_PK;
@@ -32,18 +32,6 @@ drop index IF EXISTS REG_HAS_EXTENSION_FK;
 drop index IF EXISTS RES_HAS_EXTENSION_FK;
 drop index IF EXISTS TIME_EXTEND_PK;
 drop table IF EXISTS TIME_EXTEND CASCADE;
-drop function if exists fn_membership_level(p_customer_id INT);
-drop procedure if exists sp_create_registration(
-    p_customer_id INT,
-    p_room_id INT,
-    p_date DATE,
-    p_start TIMESTAMP,
-    p_end TIMESTAMP,
-    p_num_people INT
-);
-drop function if exists trg_check_room_capacity();
-drop function if exists trg_update_membership();
-drop view if exists v_room_status_today;
 
 /*==============================================================*/
 /* Table: CUSTOMER                                              */
@@ -62,6 +50,7 @@ create table CUSTOMER (
 create unique index CUSTOMER_PK on CUSTOMER (
 CUSTOMER_ID
 );
+
 
 /*==============================================================*/
 /* Table: MEMBER                                                */
@@ -86,6 +75,8 @@ CUSTOMER_ID
 /*==============================================================*/
 create table PAYMENT (
    PAYMENT_ID           SERIAL               not null,
+   REGISTRATION_ID      INT4                 null,
+   RESERVATION_ID       INT4                 null,
    PAYMENT_TIME         TIMESTAMP            null,
    PAYMENT_METHOD       VARCHAR(10)          null,
    TOTAL_COST           NUMERIC(8,2)         null,
@@ -127,9 +118,9 @@ SONGS_ID
 /* Table: REGISTRATION                                          */
 /*==============================================================*/
 create table REGISTRATION (
-   CUSTOMER_ID          INT4                 not null,
    REGISTRATION_ID      SERIAL               not null,
-   PAYMENT_ID           INT4                 not null,
+   CUSTOMER_ID          INT4                 not null,
+   ROOM_ID              INT4                 not null,
    RG_DATE              DATE                 null,
    START_TIME           TIMESTAMP            null,
    END_TIME             TIMESTAMP            null,
@@ -152,19 +143,19 @@ CUSTOMER_ID
 );
 
 /*==============================================================*/
-/* Index: RESULTS_PAYMENT_REGISTRATION_FK                       */
+/* Index: RESULTS_PAYMENT_REGISTRATION_FK                           */
 /*==============================================================*/
-create  index RESULTS_PAYMENT_REGISTRATION_FK on REGISTRATION (
-PAYMENT_ID
+create  index RESULTS_PAYMENT_REGISTRATION_FK on PAYMENT (
+REGISTRATION_ID
 );
 
 /*==============================================================*/
 /* Table: RESERVATION                                           */
 /*==============================================================*/
 create table RESERVATION (
-   CUSTOMER_ID          INT4                 not null,
    RESERVATION_ID       SERIAL               not null,
-   PAYMENT_ID           INT4                 not null,
+   CUSTOMER_ID          INT4                 not null,
+   ROOM_ID              INT4                 not null,
    RV_DATE              DATE                 null,
    START_TIME           TIMESTAMP            null,
    END_TIME             TIMESTAMP            null,
@@ -189,22 +180,21 @@ create  index MAKE_RESERVATION_FK on RESERVATION (
 CUSTOMER_ID
 );
 
+
 /*==============================================================*/
-/* Index: RESULTS_PAYMENT_RESERVATION_FK                        */
+/* Index: RESULTS_PAYMENT_RESERVATION_FK                            */
 /*==============================================================*/
-create  index RESULTS_PAYMENT_RESERVATION_FK on RESERVATION (
-PAYMENT_ID
+create  index RESULTS_PAYMENT_RESERVATION_FK on PAYMENT (
+RESERVATION_ID
 );
 
 /*==============================================================*/
 /* Table: ROOM                                                  */
 /*==============================================================*/
 create table ROOM (
-   REGISTRATION_ID      INT4                 null,
-   RESERVATION_ID       INT4                 null,
    ROOM_ID              SERIAL               not null,
    ROOM_TYPE            VARCHAR(10)          null,
-   CAPACITTY            INT4                 null,
+   CAPACITY             INT4                 null,
    HOURLY_RATE          NUMERIC(8,2)         null,
    STATUS               VARCHAR(20)          null,
    constraint PK_ROOM primary key (ROOM_ID)
@@ -218,17 +208,17 @@ ROOM_ID
 );
 
 /*==============================================================*/
-/* Index: ASSIGNED_FOR_RESERVATION_FK                           */
+/* Index: ASSIGNED_FOR_RESERVATION_FK                              */
 /*==============================================================*/
-create  index ASSIGNED_FOR_RESERVATION_FK on ROOM (
-RESERVATION_ID
+create  index ASSIGNED_FOR_RESERVATION_FK on RESERVATION (
+ROOM_ID
 );
 
 /*==============================================================*/
-/* Index: ASSIGNED_FOR_REGISTRATION_FK                          */
+/* Index: ASSIGNED_FOR_REGISTRATION_FK                             */
 /*==============================================================*/
-create  index ASSIGNED_FOR_REGISTRATION_FK on ROOM (
-REGISTRATION_ID
+create  index ASSIGNED_FOR_REGISTRATION_FK on REGISTRATION (
+ROOM_ID
 );
 
 /*==============================================================*/
@@ -282,9 +272,9 @@ CUSTOMER_ID
 /* Table: TIME_EXTEND                                           */
 /*==============================================================*/
 create table TIME_EXTEND (
+   EXTEND_ID            SERIAL               not null,
    REGISTRATION_ID      INT4                 null,
    RESERVATION_ID       INT4                 null,
-   EXTEND_ID            SERIAL               not null,
    EXTENSION_DURATION   TIME                 null,
    EXTENSION_COST       NUMERIC(8,2)         null,
    constraint PK_TIME_EXTEND primary key (EXTEND_ID)
@@ -316,6 +306,16 @@ alter table MEMBER
       references CUSTOMER (CUSTOMER_ID)
       on delete restrict on update restrict;
 
+alter table PAYMENT
+   add constraint FK_PAYMENT_PAYMENT_FOR_REGISTRATION foreign key (REGISTRATION_ID)
+      references REGISTRATION (REGISTRATION_ID)
+      on delete restrict on update restrict;
+
+alter table PAYMENT
+   add constraint FK_PAYMENT_PAYMENT_FOR_RESERVATION foreign key (RESERVATION_ID)
+      references RESERVATION (RESERVATION_ID)
+      on delete restrict on update restrict;
+
 alter table PICK
    add constraint FK_PICK_PICK_SONGS foreign key (SONGS_ID)
       references SONGS (SONGS_ID)
@@ -332,12 +332,9 @@ alter table REGISTRATION
       on delete restrict on update restrict;
 
 alter table REGISTRATION
-   add constraint FK_REGISTRA_RESULTS_P_PAYMENT foreign key (PAYMENT_ID)
-      references PAYMENT (PAYMENT_ID)
+   add constraint FK_REGISTRA_USES_ROOM_ROOM foreign key (ROOM_ID)
+      references ROOM (ROOM_ID)
       on delete restrict on update restrict;
-
-ALTER TABLE REGISTRATION
-	ALTER COLUMN PAYMENT_ID DROP NOT NULL;
 
 alter table RESERVATION
    add constraint FK_RESERVAT_MAKE_RESE_CUSTOMER foreign key (CUSTOMER_ID)
@@ -345,18 +342,8 @@ alter table RESERVATION
       on delete restrict on update restrict;
 
 alter table RESERVATION
-   add constraint FK_RESERVAT_RESULTS_P_PAYMENT foreign key (PAYMENT_ID)
-      references PAYMENT (PAYMENT_ID)
-      on delete restrict on update restrict;
-
-alter table ROOM
-   add constraint FK_ROOM_ASSIGNED__REGISTRA foreign key (REGISTRATION_ID)
-      references REGISTRATION (REGISTRATION_ID)
-      on delete restrict on update restrict;
-
-alter table ROOM
-   add constraint FK_ROOM_ASSIGNED__RESERVAT foreign key (RESERVATION_ID)
-      references RESERVATION (RESERVATION_ID)
+   add constraint FK_RESERVAT_USES_ROOM_ROOM foreign key (ROOM_ID)
+      references ROOM (ROOM_ID)
       on delete restrict on update restrict;
 
 alter table SONG_ACTIVITIES
@@ -407,19 +394,67 @@ INSERT INTO MEMBER (CUSTOMER_ID, MEMBER_STATUS, NUMBER_OF_VISITS, DISCOUNT_MEMBE
 SELECT * FROM MEMBER;
 
 -- ===========================
+-- INSERT INTO ROOM (10)
+-- ===========================
+INSERT INTO ROOM (ROOM_TYPE, CAPACITY, HOURLY_RATE, STATUS) VALUES
+('SMALL',4,50000,'AVAILABLE'),
+('MEDIUM',6,75000,'AVAILABLE'),
+('LARGE',8,100000,'AVAILABLE'),
+('VIP',10,150000,'AVAILABLE'),
+('SMALL',4,50000,'AVAILABLE'),
+('MEDIUM',6,75000,'AVAILABLE'),
+('LARGE',8,100000,'AVAILABLE'),
+('VIP',10,150000,'AVAILABLE'),
+('SMALL',4,50000,'AVAILABLE'),
+('MEDIUM',6,75000,'AVAILABLE');
+SELECT * FROM ROOM;
+
+-- ===============================
+-- INSERT INTO REGISTRATION (10)
+-- ===============================
+INSERT INTO REGISTRATION (CUSTOMER_ID, ROOM_ID, RG_DATE, START_TIME, END_TIME, REGISTRATION_STATUS) VALUES
+(1,1,'2025-11-10','2025-11-10 10:00','2025-11-10 12:00','FINISHED'),
+(2,2,'2025-11-11','2025-11-11 11:00','2025-11-11 13:00','FINISHED'),
+(3,3,'2025-11-12','2025-11-12 12:00','2025-11-12 14:00','FINISHED'),
+(4,4,'2025-11-13','2025-11-13 09:30','2025-11-13 11:30','FINISHED'),
+(5,5,'2025-11-14','2025-11-14 14:00','2025-11-14 16:00','FINISHED'),
+(6,1,'2025-11-15','2025-11-15 15:00','2025-11-15 17:00','FINISHED'),
+(7,2,'2025-11-16','2025-11-16 16:00','2025-11-16 18:00','FINISHED'),
+(8,3,'2025-11-17','2025-11-17 11:30','2025-11-17 13:30','FINISHED'),
+(9,4,'2025-11-18','2025-11-18 17:00','2025-11-18 19:00','FINISHED'),
+(10,5,'2025-11-19','2025-11-19 18:00','2025-11-19 20:00','FINISHED');
+SELECT * FROM REGISTRATION;
+
+-- ===============================
+-- INSERT INTO RESERVATION (10)
+-- ===============================
+INSERT INTO RESERVATION (CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME, RESERVATION_DATE, PCT_DP, PAID_DP, LATE) VALUES
+(1,6,'2025-11-22','2025-11-22 10:00','2025-11-22 12:00','2025-11-20',0.30,36000,false),
+(2,7,'2025-11-23','2025-11-23 12:00','2025-11-23 14:00','2025-11-21',0.30,45000,false),
+(3,8,'2025-11-24','2025-11-24 14:00','2025-11-24 16:00','2025-11-22',0.30,27000,false),
+(4,9,'2025-11-25','2025-11-25 16:00','2025-11-25 18:00','2025-11-23',0.30,33000,false),
+(5,10,'2025-11-26','2025-11-26 18:00','2025-11-26 20:00','2025-11-24',0.30,48000,false),
+(6,6,'2025-11-27','2025-11-27 09:00','2025-11-27 11:00','2025-11-25',0.30,24000,false),
+(7,7,'2025-11-28','2025-11-28 11:00','2025-11-28 13:00','2025-11-26',0.30,60000,false),
+(8,8,'2025-11-29','2025-11-29 13:00','2025-11-29 15:00','2025-11-27',0.30,39000,false),
+(9,9,'2025-11-30','2025-11-30 15:00','2025-11-30 17:00','2025-11-28',0.30,30000,false),
+(10,10,'2025-12-01','2025-12-01 17:00','2025-12-01 19:00','2025-11-29',0.30,42000,false);
+SELECT * FROM RESERVATION;
+
+-- ===========================
 -- INSERT INTO PAYMENT (10)
 -- ===========================
-INSERT INTO PAYMENT (PAYMENT_TIME, PAYMENT_METHOD, TOTAL_COST, DISCOUNT_MEMBER, FINAL_COST) VALUES
-(NOW(), 'CASH', 120000, 0.10, 108000),
-(NOW(), 'CARD', 150000, 0.15, 127500),
-(NOW(), 'CASH', 90000, 0.00, 90000),
-(NOW(), 'QRIS', 110000, 0.20, 88000),
-(NOW(), 'CASH', 160000, 0.05, 152000),
-(NOW(), 'CARD', 80000, 0.00, 80000),
-(NOW(), 'QRIS', 200000, 0.25, 150000),
-(NOW(), 'CASH', 130000, 0.10, 117000),
-(NOW(), 'CARD', 100000, 0.00, 100000),
-(NOW(), 'QRIS', 140000, 0.15, 119000);
+INSERT INTO PAYMENT (REGISTRATION_ID, RESERVATION_ID, PAYMENT_TIME, PAYMENT_METHOD, TOTAL_COST, DISCOUNT_MEMBER, FINAL_COST) VALUES
+(1,NULL,NOW(), 'CASH', 120000, 0.10, 108000),
+(2,NULL,NOW(), 'CARD', 150000, 0.15, 127500),
+(3,NULL,NOW(), 'CASH', 90000, 0.00, 90000),
+(4,NULL,NOW(), 'QRIS', 110000, 0.20, 88000),
+(5,NULL,NOW(), 'CASH', 160000, 0.05, 152000),
+(6,NULL,NOW(), 'CARD', 80000, 0.00, 80000),
+(7,NULL,NOW(), 'QRIS', 200000, 0.25, 150000),
+(8,NULL,NOW(), 'CASH', 130000, 0.10, 117000),
+(9,NULL,NOW(), 'CARD', 100000, 0.00, 100000),
+(10,NULL,NOW(), 'QRIS', 140000, 0.15, 119000);
 SELECT * FROM PAYMENT;
 
 -- ===========================
@@ -463,56 +498,6 @@ INSERT INTO PICK (SONGS_ID, ACTIVITY_ID) VALUES
 SELECT * FROM PICK;
 
 -- ===============================
--- INSERT INTO REGISTRATION (10)
--- ===============================
-INSERT INTO REGISTRATION (CUSTOMER_ID, PAYMENT_ID, RG_DATE, START_TIME, END_TIME, REGISTRATION_STATUS) VALUES
-(1,1,'2025-11-10','2025-11-10 10:00','2025-11-10 12:00','FINISHED'),
-(2,2,'2025-11-11','2025-11-11 11:00','2025-11-11 13:00','FINISHED'),
-(3,3,'2025-11-12','2025-11-12 12:00','2025-11-12 14:00','FINISHED'),
-(4,4,'2025-11-13','2025-11-13 09:30','2025-11-13 11:30','FINISHED'),
-(5,5,'2025-11-14','2025-11-14 14:00','2025-11-14 16:00','FINISHED'),
-(6,6,'2025-11-15','2025-11-15 15:00','2025-11-15 17:00','FINISHED'),
-(7,7,'2025-11-16','2025-11-16 16:00','2025-11-16 18:00','FINISHED'),
-(8,8,'2025-11-17','2025-11-17 11:30','2025-11-17 13:30','FINISHED'),
-(9,9,'2025-11-18','2025-11-18 17:00','2025-11-18 19:00','FINISHED'),
-(10,10,'2025-11-19','2025-11-19 18:00','2025-11-19 20:00','FINISHED');
-SELECT * FROM REGISTRATION;
-
-
--- ===============================
--- INSERT INTO RESERVATION (10)
--- ===============================
-INSERT INTO RESERVATION (CUSTOMER_ID, PAYMENT_ID, RV_DATE, START_TIME, END_TIME, RESERVATION_DATE, PCT_DP, PAID_DP, LATE) VALUES
-(1,1,'2025-11-22','2025-11-22 10:00','2025-11-22 12:00','2025-11-20',0.30,36000,false),
-(2,2,'2025-11-23','2025-11-23 12:00','2025-11-23 14:00','2025-11-21',0.30,45000,false),
-(3,3,'2025-11-24','2025-11-24 14:00','2025-11-24 16:00','2025-11-22',0.30,27000,false),
-(4,4,'2025-11-25','2025-11-25 16:00','2025-11-25 18:00','2025-11-23',0.30,33000,false),
-(5,5,'2025-11-26','2025-11-26 18:00','2025-11-26 20:00','2025-11-24',0.30,48000,false),
-(6,6,'2025-11-27','2025-11-27 09:00','2025-11-27 11:00','2025-11-25',0.30,24000,false),
-(7,7,'2025-11-28','2025-11-28 11:00','2025-11-28 13:00','2025-11-26',0.30,60000,false),
-(8,8,'2025-11-29','2025-11-29 13:00','2025-11-29 15:00','2025-11-27',0.30,39000,false),
-(9,9,'2025-11-30','2025-11-30 15:00','2025-11-30 17:00','2025-11-28',0.30,30000,false),
-(10,10,'2025-12-01','2025-12-01 17:00','2025-12-01 19:00','2025-11-29',0.30,42000,false);
-SELECT * FROM RESERVATION;
-
-
--- ===========================
--- INSERT INTO ROOM (10)
--- ===========================
-INSERT INTO ROOM (REGISTRATION_ID, RESERVATION_ID, ROOM_TYPE, CAPACITTY, HOURLY_RATE, STATUS) VALUES
-(1,NULL,'SMALL',4,50000,'AVAILABLE'),
-(2,NULL,'MEDIUM',6,75000,'AVAILABLE'),
-(3,NULL,'LARGE',8,100000,'AVAILABLE'),
-(4,NULL,'VIP',10,150000,'AVAILABLE'),
-(5,NULL,'SMALL',4,50000,'AVAILABLE'),
-(NULL,1,'MEDIUM',6,75000,'AVAILABLE'),
-(NULL,2,'LARGE',8,100000,'AVAILABLE'),
-(NULL,3,'VIP',10,150000,'AVAILABLE'),
-(NULL,4,'SMALL',4,50000,'AVAILABLE'),
-(NULL,5,'MEDIUM',6,75000,'AVAILABLE');
-SELECT * FROM ROOM;
-
--- ===============================
 -- INSERT INTO TIME_EXTEND (10)
 -- ===============================
 INSERT INTO TIME_EXTEND (REGISTRATION_ID, RESERVATION_ID, EXTENSION_DURATION, EXTENSION_COST) VALUES
@@ -531,330 +516,563 @@ SELECT * FROM TIME_EXTEND;
 /*============================================================================
      Fungsi untuk menentukan level membership berdasarkan NUMBER_OF_VISITS
 =============================================================================*/
-CREATE OR REPLACE FUNCTION fn_membership_level(p_customer_id INT)
-RETURNS VARCHAR
-LANGUAGE plpgsql
-AS $$
+DROP FUNCTION IF EXISTS fn_membership_level(p_customer_id INTEGER);
+
+CREATE OR REPLACE FUNCTION fn_membership_level(p_customer_id INTEGER)
+RETURNS VARCHAR AS $$
 DECLARE
-    v_visits INT;
-    v_level VARCHAR := 'none';
+    v_visit_count INTEGER;
+    v_member_status VARCHAR(9);
 BEGIN
-    SELECT number_of_visits
-    INTO v_visits
-    FROM MEMBER
-    WHERE customer_id = p_customer_id;
-
-    IF v_visits IS NULL THEN
-        RETURN 'none';
-    ELSIF v_visits >= 30 THEN
-        v_level := 'platinum';
-    ELSIF v_visits >= 15 THEN
-        v_level := 'gold';
-    ELSIF v_visits >= 5 THEN
-        v_level := 'silver';
-    ELSE
-        v_level := 'none';
+    SELECT NUMBER_OF_VISITS INTO v_visit_count
+    FROM MEMBER 
+    WHERE CUSTOMER_ID = p_customer_id;
+    
+    -- If customer not found in MEMBER table, return 'NON-MEMBER'
+    IF NOT FOUND THEN
+        RETURN 'NON-MEMBER';
     END IF;
-
-    RETURN v_level;
+    
+    IF v_visit_count >= 30 THEN
+        v_member_status := 'Platinum';
+    ELSIF v_visit_count >= 15 THEN
+        v_member_status := 'Gold';
+    ELSIF v_visit_count >= 5 THEN
+        v_member_status := 'Silver';
+    ELSE
+        v_member_status := 'INACTIVE';
+    END IF;
+    
+    RETURN v_member_status;
 END;
-$$;
+$$ LANGUAGE plpgsql;
 
-SELECT fn_membership_level(1) AS level_user1;
-SELECT fn_membership_level(2) AS level_user2;
-SELECT fn_membership_level(3) AS level_user3;
-SELECT fn_membership_level(4) AS level_user4;
+SELECT 
+    c.CUSTOMER_ID,
+    c.NAME,
+    m.NUMBER_OF_VISITS,
+    fn_membership_level(c.CUSTOMER_ID) as membership_level
+FROM CUSTOMER c
+LEFT JOIN MEMBER m ON c.CUSTOMER_ID = m.CUSTOMER_ID
+WHERE c.CUSTOMER_ID IN (1, 2, 3, 4, 5);
+
+SELECT 
+    c.CUSTOMER_ID,
+    c.NAME,
+    m.NUMBER_OF_VISITS,
+    m.MEMBER_STATUS as current_status,
+    fn_membership_level(c.CUSTOMER_ID) as calculated_level
+FROM CUSTOMER c
+JOIN MEMBER m ON c.CUSTOMER_ID = m.CUSTOMER_ID
+ORDER BY c.CUSTOMER_ID;
 
 /*============================================================================
-                 Prosedur untuk registrasi on-the-spot
--- p_customer_id: id customer (boleh terdaftar atau guest)
--- p_room_id: id ruangan yang ingin dipakai
--- p_date: tanggal registrasi (date)
--- p_start: waktu mulai (timestamp)
--- p_end: waktu selesai (timestamp)
--- p_num_people: jumlah orang datang (int)				 
+                 Prosedur untuk registrasi on-the-spot		 
 =============================================================================*/
-CREATE OR REPLACE PROCEDURE sp_create_registration(
-    p_customer_id INT,
-    p_room_id INT,
+DROP PROCEDURE IF EXISTS sp_create_registration(
+    p_customer_id INTEGER,
+    p_room_id INTEGER,
     p_date DATE,
     p_start TIMESTAMP,
     p_end TIMESTAMP,
-    p_num_people INT
+    p_num_people INTEGER
+);
+
+CREATE OR REPLACE PROCEDURE sp_create_registration(
+    p_customer_id INTEGER,
+    p_room_id INTEGER,
+    p_date DATE,
+    p_start TIMESTAMP,
+    p_end TIMESTAMP,
+    p_num_people INTEGER
 )
-LANGUAGE plpgsql
 AS $$
 DECLARE
-    v_room_capacity INT;
-    v_room_status TEXT;
-    v_conflicts INT := 0;
-    v_reg_id INT;
-    v_member_exists INT;
-    v_level TEXT;
-    v_discount NUMERIC := 0;
-    v_alternatives TEXT := '';
+    v_room_capacity INTEGER;
+    v_room_status VARCHAR(20);
+    v_is_available BOOLEAN;
+    v_registration_id INTEGER;
+    v_duration_hours NUMERIC;
+    v_total_cost NUMERIC(8,2);
+    v_hourly_rate NUMERIC(8,2);
+    v_discount_member FLOAT8;
+    v_final_cost NUMERIC(8,2);
 BEGIN
-    -- basic validations
-    IF p_end <= p_start THEN
-        RAISE EXCEPTION 'END must be later than START';
-    END IF;
-
-    IF p_num_people <= 0 THEN
-        RAISE EXCEPTION 'p_num_people must be > 0';
-    END IF;
-
-    -- check room exists and read capacity & status
-    SELECT CAPACITTY, STATUS
-    INTO v_room_capacity, v_room_status
-    FROM ROOM
+    SELECT CAPACITY, STATUS, HOURLY_RATE 
+    INTO v_room_capacity, v_room_status, v_hourly_rate
+    FROM ROOM 
     WHERE ROOM_ID = p_room_id;
-
+    
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'Room id % does not exist', p_room_id;
+        RAISE EXCEPTION 'Room ID % not found', p_room_id;
     END IF;
-
-    -- check capacity
-    IF v_room_capacity IS NULL OR v_room_capacity < p_num_people THEN
-        RAISE EXCEPTION 'Room % capacity % is insufficient for % people', p_room_id, v_room_capacity, p_num_people;
+    
+    IF p_num_people > v_room_capacity THEN
+        RAISE EXCEPTION 'Room capacity (%) is insufficient for % people', 
+            v_room_capacity, p_num_people;
     END IF;
-
-    -- check conflicts with existing REGISTRATION assigned to this room
-    -- we join ROOM -> REGISTRATION via ROOM.REGISTRATION_ID
-    SELECT count(*) INTO v_conflicts
-    FROM ROOM r
-    JOIN REGISTRATION reg ON r.REGISTRATION_ID = reg.REGISTRATION_ID
-    WHERE r.ROOM_ID = p_room_id
-      AND reg.RG_DATE = p_date
-      -- overlap test: NOT (new_end <= existing_start OR new_start >= existing_end)
-      AND NOT (p_end <= reg.START_TIME OR p_start >= reg.END_TIME);
-
-    -- check conflicts with existing RESERVATION assigned to this room
-    SELECT v_conflicts + count(*) INTO v_conflicts
-    FROM ROOM r
-    JOIN RESERVATION res ON r.RESERVATION_ID = res.RESERVATION_ID
-    WHERE r.ROOM_ID = p_room_id
-      AND res.RV_DATE = p_date
-      AND NOT (p_end <= res.START_TIME OR p_start >= res.END_TIME);
-
-    IF v_conflicts > 0 THEN
-        -- build a short list of alternative rooms (up to 3)
-        v_alternatives := '';
-        FOR v_room_capacity, v_room_status IN
-            SELECT r.CAPACITTY, r.STATUS
-            FROM ROOM r
-            WHERE r.ROOM_ID != p_room_id
-              AND r.CAPACITTY >= p_num_people
-              AND r.STATUS = 'tersedia'
-            LIMIT 1 -- just to ensure cursor works; actual check done below
-        LOOP
-            -- not used; this FOR is only to ensure the block compiles with variable binding
-            EXIT;
-        END LOOP;
-
-        -- More robust: find up to 3 rooms that have no conflicting reservations/registrations
-        v_alternatives := (
-            SELECT string_agg('Room ' || r.room_id || ' (' || r.room_type || ')', '; ')
-            FROM (
-                SELECT r.*
-                FROM ROOM r
-                WHERE r.ROOM_ID != p_room_id
-                  AND r.CAPACITTY >= p_num_people
-                EXCEPT
-                -- exclude rooms that have conflicting registration
-                SELECT r2.*
-                FROM ROOM r2
-                JOIN REGISTRATION reg2 ON r2.REGISTRATION_ID = reg2.REGISTRATION_ID
-                WHERE NOT (p_end <= reg2.START_TIME OR p_start >= reg2.END_TIME)
-                  AND reg2.RG_DATE = p_date
-                EXCEPT
-                -- exclude rooms that have conflicting reservation
-                SELECT r3.*
-                FROM ROOM r3
-                JOIN RESERVATION res3 ON r3.RESERVATION_ID = res3.RESERVATION_ID
-                WHERE NOT (p_end <= res3.START_TIME OR p_start >= res3.END_TIME)
-                  AND res3.RV_DATE = p_date
-                LIMIT 3
-            ) r
-        );
-
-        IF v_alternatives IS NULL OR trim(v_alternatives) = '' THEN
-            RAISE EXCEPTION 'Room % is booked for the requested time. No suitable alternatives found.', p_room_id;
-        ELSE
-            RAISE EXCEPTION 'Room % is booked for the requested time. Alternatives: %', p_room_id, v_alternatives;
-        END IF;
+    
+    IF v_room_status != 'AVAILABLE' THEN
+        RAISE EXCEPTION 'Room is not available. Current status: %', v_room_status;
     END IF;
-
-    -- If no conflict, insert registration (payment_id left NULL for on-the-spot; application can create PAYMENT later)
-    INSERT INTO REGISTRATION (customer_id, payment_id, rg_date, start_time, end_time, registration_status)
-    VALUES (p_customer_id, NULL, p_date, p_start, p_end, 'confirmed')
-    RETURNING registration_id INTO v_reg_id;
-
-    -- assign room to this registration and mark room as used
-    UPDATE ROOM
-    SET REGISTRATION_ID = v_reg_id,
-        STATUS = 'digunakan'
-    WHERE ROOM_ID = p_room_id;
-
-    -- if customer is a member, increment visits and update discount
-    SELECT count(*) INTO v_member_exists FROM MEMBER WHERE CUSTOMER_ID = p_customer_id;
-    IF v_member_exists > 0 THEN
-        -- increment visits
-        UPDATE MEMBER
-        SET NUMBER_OF_VISITS = COALESCE(NUMBER_OF_VISITS,0) + 1
-        WHERE CUSTOMER_ID = p_customer_id;
-
-        -- compute new level & discount and persist discount in MEMBER.DISCOUNT_MEMBER
-        v_level := fn_membership_level(p_customer_id);
-        IF v_level = 'platinum' THEN
-            v_discount := 0.15;
-        ELSIF v_level = 'gold' THEN
-            v_discount := 0.10;
-        ELSIF v_level = 'silver' THEN
-            v_discount := 0.05;
-        ELSE
-            v_discount := 0;
-        END IF;
-
-        UPDATE MEMBER
-        SET DISCOUNT_MEMBER = v_discount
-        WHERE CUSTOMER_ID = p_customer_id;
+    
+    PERFORM 1 FROM REGISTRATION 
+    WHERE ROOM_ID = p_room_id 
+      AND RG_DATE = p_date
+      AND (
+        (START_TIME <= p_start AND END_TIME > p_start) OR
+        (START_TIME < p_end AND END_TIME >= p_end) OR
+        (START_TIME >= p_start AND END_TIME <= p_end)
+      )
+      AND REGISTRATION_STATUS != 'CANCELLED';
+    
+    IF FOUND THEN
+        RAISE EXCEPTION 'Room is already booked for the selected time period';
     END IF;
-
-    RAISE NOTICE 'Registration created with ID % and room % assigned. Member discount: %', v_reg_id, p_room_id, v_discount;
+   
+    PERFORM 1 FROM RESERVATION 
+    WHERE ROOM_ID = p_room_id 
+      AND RV_DATE = p_date
+      AND (
+        (START_TIME <= p_start AND END_TIME > p_start) OR
+        (START_TIME < p_end AND END_TIME >= p_end) OR
+        (START_TIME >= p_start AND END_TIME <= p_end)
+      );
+    
+    IF FOUND THEN
+        RAISE EXCEPTION 'Room is reserved for the selected time period';
+    END IF;
+    
+    v_duration_hours := EXTRACT(EPOCH FROM (p_end - p_start)) / 3600;
+    
+    IF v_duration_hours <= 0 THEN
+        RAISE EXCEPTION 'Invalid time duration. End time must be after start time';
+    END IF;
+    
+    v_total_cost := v_hourly_rate * v_duration_hours;
+    
+    SELECT DISCOUNT_MEMBER INTO v_discount_member
+    FROM MEMBER 
+    WHERE CUSTOMER_ID = p_customer_id;
+    
+    IF NOT FOUND THEN
+        v_discount_member := 0;
+    END IF;
+    
+    v_final_cost := v_total_cost * (1 - v_discount_member);
+    
+    INSERT INTO REGISTRATION (
+        CUSTOMER_ID, ROOM_ID, RG_DATE, START_TIME, END_TIME, REGISTRATION_STATUS
+    ) VALUES (
+        p_customer_id, p_room_id, p_date, p_start, p_end, 'CONFIRMED'
+    ) RETURNING REGISTRATION_ID INTO v_registration_id;
+    
+    UPDATE ROOM SET STATUS = 'OCCUPIED' WHERE ROOM_ID = p_room_id;
+    
+    UPDATE CUSTOMER SET PEOPLE_COMING = p_num_people 
+    WHERE CUSTOMER_ID = p_customer_id;
+    
+    RAISE NOTICE 'Registration successful!';
+    RAISE NOTICE 'Registration ID: %, Total Cost: %, Discount: %, Final Cost: %', 
+        v_registration_id, v_total_cost, (v_discount_member * 100) || '%', v_final_cost;
+    
+EXCEPTION
+    WHEN others THEN
+        RAISE EXCEPTION 'Registration failed: %', SQLERRM;
 END;
-$$;
+$$ LANGUAGE plpgsql;
 
-INSERT INTO CUSTOMER (name, no_phone, people_coming)
-VALUES ('Test User', '081234', 3) RETURNING customer_id;
-
+-- berhasil
 CALL sp_create_registration(
-    p_customer_id := 11,
-    p_room_id     := 1,
-    p_date        := CURRENT_DATE,
-    p_start       := (CURRENT_TIMESTAMP + INTERVAL '10 minutes')::timestamp,
-    p_end         := (CURRENT_TIMESTAMP + INTERVAL '70 minutes')::timestamp,
-    p_num_people  := 3
-);
-SELECT * FROM REGISTRATION ORDER BY registration_id DESC LIMIT 1;
-SELECT * FROM ROOM WHERE room_id = 1;
-
-CALL sp_create_registration(
-    11, 1, CURRENT_DATE,
-    (CURRENT_TIMESTAMP + INTERVAL '10 minutes')::timestamp,
-    (CURRENT_TIMESTAMP + INTERVAL '70 minutes')::timestamp,
-    10  -- terlalu banyak
+    p_customer_id := 1,
+    p_room_id := 1,
+    p_date := '2025-11-20',
+    p_start := '2025-11-20 14:00:00',
+    p_end := '2025-11-20 16:00:00',
+    p_num_people := 3
 );
 
+-- gagal (ga cukup)
 CALL sp_create_registration(
-    11, 1, CURRENT_DATE,
-    (CURRENT_TIMESTAMP + INTERVAL '20 minutes')::timestamp,
-    (CURRENT_TIMESTAMP + INTERVAL '50 minutes')::timestamp,
-    3  -- terlalu banyak
-); -- Jadwal bertabrakan
+    p_customer_id := 2,
+    p_room_id := 1,  -- Small (4)
+    p_date := '2025-11-20',
+    p_start := '2025-11-20 17:00:00',
+    p_end := '2025-11-20 19:00:00',
+    p_num_people := 5
+);
+
+/*============================================================================
+                    Prosedur untuk cancel reservation		 
+=============================================================================*/
+CREATE OR REPLACE PROCEDURE p_cancel_reservation(p_reservation_id INTEGER)
+AS $$
+DECLARE
+    v_reservation_record RECORD;
+    v_days_before INTEGER;
+    v_can_cancel BOOLEAN;
+    v_room_id INTEGER;
+BEGIN
+    SELECT 
+        r.RESERVATION_ID,
+        r.RV_DATE,
+        r.ROOM_ID,
+        r.START_TIME,
+        c.NAME as customer_name
+    INTO v_reservation_record
+    FROM RESERVATION r
+    JOIN CUSTOMER c ON r.CUSTOMER_ID = c.CUSTOMER_ID
+    WHERE r.RESERVATION_ID = p_reservation_id;
+    
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Reservation ID % not found', p_reservation_id;
+    END IF;
+    
+    v_days_before := v_reservation_record.RV_DATE - CURRENT_DATE;
+    
+    IF v_days_before < 3 THEN
+        RAISE EXCEPTION 'Cannot cancel reservation. Cancellation must be at least 3 days before reservation date. Current: % days before', v_days_before;
+    END IF;
+    
+    v_room_id := v_reservation_record.ROOM_ID;
+    
+    DELETE FROM RESERVATION 
+    WHERE RESERVATION_ID = p_reservation_id;
+    
+    UPDATE ROOM 
+    SET STATUS = 'AVAILABLE' 
+    WHERE ROOM_ID = v_room_id;
+    
+    RAISE NOTICE 'Reservation ID % for % on % has been successfully cancelled.', 
+        p_reservation_id, 
+        v_reservation_record.customer_name,
+        v_reservation_record.RV_DATE;
+        
+EXCEPTION
+    WHEN others THEN
+        RAISE EXCEPTION 'Cancellation failed: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+INSERT INTO RESERVATION (CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME, RESERVATION_DATE, PCT_DP, PAID_DP, LATE) 
+VALUES 
+(1, 1, CURRENT_DATE + INTERVAL '5 days', -- 5 hari dari sekarang (bisa cancel)
+ CURRENT_TIMESTAMP + INTERVAL '5 days', 
+ CURRENT_TIMESTAMP + INTERVAL '7 days', 
+ CURRENT_DATE, 0.3, 30000, false),
+ 
+(2, 2, CURRENT_DATE + INTERVAL '2 days', -- 2 hari dari sekarang (tidak bisa cancel)
+ CURRENT_TIMESTAMP + INTERVAL '2 days', 
+ CURRENT_TIMESTAMP + INTERVAL '4 days', 
+ CURRENT_DATE, 0.3, 45000, false)
+RETURNING RESERVATION_ID;
+
+-- Test 1: (H-5)
+CALL p_cancel_reservation(11); 
+
+-- Test 2: (H-2) 
+CALL p_cancel_reservation(12);
+
+-- Test 3 iseng
+CALL p_cancel_reservation(999);
 
 /*============================================================================
             Trigger untuk cek kapasitas ruangan ≥ jumlah orang
 =============================================================================*/
-CREATE OR REPLACE FUNCTION trg_check_room_capacity()
-RETURNS trigger AS $$
+DROP FUNCTION IF EXISTS fn_validate_room_capacity();
+
+CREATE OR REPLACE FUNCTION fn_validate_room_capacity()
+RETURNS TRIGGER AS $$
 DECLARE
-    v_capacity INT;
+    v_room_capacity INTEGER;
+    v_people_coming INTEGER;
 BEGIN
-    -- Ambil kapasitas ruangan
-    SELECT r.CAPACITTY INTO v_capacity
-    FROM ROOM r
-    WHERE r.ROOM_ID = NEW.ROOM_ID;
-
-    IF v_capacity IS NULL THEN
-        RAISE EXCEPTION 'Room % not found.', NEW.ROOM_ID;
+    SELECT CAPACITY INTO v_room_capacity
+    FROM ROOM 
+    WHERE ROOM_ID = NEW.ROOM_ID;
+    
+    SELECT PEOPLE_COMING INTO v_people_coming
+    FROM CUSTOMER 
+    WHERE CUSTOMER_ID = NEW.CUSTOMER_ID;
+    
+    IF v_people_coming > v_room_capacity THEN
+        RAISE EXCEPTION 'Room capacity (%) exceeded. Customer has % people', 
+            v_room_capacity, v_people_coming;
     END IF;
-
-    -- Cek kapasitas
-    IF NEW.NUM_PEOPLE > v_capacity THEN
-        RAISE EXCEPTION 
-        'Jumlah orang (%) melebihi kapasitas ruangan (%)', 
-        NEW.NUM_PEOPLE, v_capacity;
-    END IF;
-
+    
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER check_room_capacity_before_insert
-BEFORE INSERT ON REGISTRATION
-FOR EACH ROW
-EXECUTE FUNCTION trg_check_room_capacity();
+-- untuk registrasi
+CREATE OR REPLACE TRIGGER tr_validate_registration_capacity
+    BEFORE INSERT OR UPDATE ON REGISTRATION
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_validate_room_capacity();
+
+-- untuk reservasi
+CREATE OR REPLACE TRIGGER tr_validate_reservation_capacity
+    BEFORE INSERT OR UPDATE ON RESERVATION
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_validate_room_capacity();
+
+-- Test gagal
+UPDATE CUSTOMER SET PEOPLE_COMING = 5 WHERE CUSTOMER_ID = 1; -- bawa 5 orang
+
+INSERT INTO REGISTRATION (
+    CUSTOMER_ID, ROOM_ID, RG_DATE, START_TIME, END_TIME, REGISTRATION_STATUS
+) VALUES (
+    1, 1, '2025-11-21', '2025-11-21 10:00:00', '2025-11-21 12:00:00', 'CONFIRMED'
+); -- small (4)
+
+-- Test berhasil;
+UPDATE CUSTOMER SET PEOPLE_COMING = 3 WHERE CUSTOMER_ID = 1; -- bawa 3 orang
+
+INSERT INTO REGISTRATION (
+    CUSTOMER_ID, ROOM_ID, RG_DATE, START_TIME, END_TIME, REGISTRATION_STATUS
+) VALUES (
+    1, 1, '2025-11-21', '2025-11-21 10:00:00', '2025-11-21 12:00:00', 'CONFIRMED'
+); -- small (4)
 
 /*============================================================================
          Trigger untuk auto-update jumlah kedatangan & level membership
 =============================================================================*/
-CREATE OR REPLACE FUNCTION trg_update_membership()
-RETURNS trigger AS $$
+DROP FUNCTION IF EXISTS fn_update_member_visits();
+
+CREATE OR REPLACE FUNCTION fn_update_member_visits()
+RETURNS TRIGGER AS $$
 DECLARE
-    v_visits INT;
-    v_level VARCHAR;
+    v_visit_count INTEGER;
+    v_new_member_status VARCHAR(9);
 BEGIN
-    -- Tambah jumlah kedatangan
-    UPDATE MEMBER
-    SET VISITS = VISITS + 1
-    WHERE CUSTOMER_ID = NEW.CUSTOMER_ID
-    RETURNING VISITS INTO v_visits;
+    -- Hanya diproses jika registration jadi 'FINISHED'
+    IF (TG_OP = 'INSERT' AND NEW.REGISTRATION_STATUS = 'FINISHED') OR
+       (TG_OP = 'UPDATE' AND NEW.REGISTRATION_STATUS = 'FINISHED' AND OLD.REGISTRATION_STATUS != 'FINISHED') THEN
+        
+        IF EXISTS (SELECT 1 FROM MEMBER WHERE CUSTOMER_ID = NEW.CUSTOMER_ID) THEN
+            -- Increment visit_count
+            UPDATE MEMBER 
+            SET NUMBER_OF_VISITS = NUMBER_OF_VISITS + 1
+            WHERE CUSTOMER_ID = NEW.CUSTOMER_ID
+            RETURNING NUMBER_OF_VISITS INTO v_visit_count;
 
-    -- Jika customer tidak punya membership → tidak melakukan apa-apa
-    IF v_visits IS NULL THEN
-        RETURN NEW;
+            IF v_visit_count >= 30 THEN
+                v_new_member_status := 'Platinum';
+            ELSIF v_visit_count >= 15 THEN
+                v_new_member_status := 'Gold';
+            ELSIF v_visit_count >= 5 THEN
+                v_new_member_status := 'Silver';
+            ELSE
+                v_new_member_status := 'INACTIVE';
+            END IF;
+            
+            UPDATE MEMBER 
+            SET MEMBER_STATUS = v_new_member_status,
+                DISCOUNT_MEMBER = 
+                    CASE 
+                        WHEN v_visit_count >= 30 THEN 0.15
+                        WHEN v_visit_count >= 15 THEN 0.10
+                        WHEN v_visit_count >= 5 THEN 0.05
+                        ELSE 0.00
+                    END
+            WHERE CUSTOMER_ID = NEW.CUSTOMER_ID;
+            
+            RAISE NOTICE 'Member updated: Customer %, Visits: %, New Status: %', 
+                NEW.CUSTOMER_ID, v_visit_count, v_new_member_status;
+        END IF;
+        
     END IF;
-
-    -- Tentukan level membership
-    IF v_visits >= 25 THEN
-        v_level := 'platinum';
-    ELSIF v_visits >= 10 THEN
-        v_level := 'gold';
-    ELSE
-        v_level := 'silver';
-    END IF;
-
-    -- Update level ke tabel MEMBER
-    UPDATE MEMBER
-    SET LEVEL = v_level
-    WHERE CUSTOMER_ID = NEW.CUSTOMER_ID;
-
+    
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER update_membership_after_registration
-AFTER INSERT ON REGISTRATION
-FOR EACH ROW
-EXECUTE FUNCTION trg_update_membership();
+CREATE OR REPLACE TRIGGER tr_update_member_after_registration
+    AFTER INSERT OR UPDATE ON REGISTRATION
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_update_member_visits();
 
-CALL sp_create_registration(
-    11, 2,
-    CURRENT_DATE,
-    (CURRENT_TIMESTAMP + INTERVAL '5 minutes')::timestamp,
-    (CURRENT_TIMESTAMP + INTERVAL '65 minutes')::timestamp,
-    3
-);
+UPDATE REGISTRATION 
+SET REGISTRATION_STATUS = 'FINISHED' 
+WHERE REGISTRATION_ID = 1;
 
-SELECT customer_id, number_of_visits, member_status
-FROM MEMBER
-WHERE customer_id = 2;
+SELECT 
+    c.CUSTOMER_ID,
+    c.NAME,
+    m.MEMBER_STATUS,
+    m.NUMBER_OF_VISITS,
+    m.DISCOUNT_MEMBER
+FROM CUSTOMER c
+JOIN MEMBER m ON c.CUSTOMER_ID = m.CUSTOMER_ID
+WHERE c.CUSTOMER_ID = 1;
 
 /*============================================================================
          View untuk melihat daftar semua ruangan + status sekarang
 =============================================================================*/
+DROP VIEW IF EXISTS v_room_status_today;
+
 CREATE OR REPLACE VIEW v_room_status_today AS
-SELECT
+SELECT 
     r.ROOM_ID,
     r.ROOM_TYPE,
-    r.CAPACITTY,
-    CASE
-        WHEN r.REGISTRATION_ID IS NOT NULL THEN 'digunakan'
-        WHEN r.RESERVATION_ID  IS NOT NULL THEN 'direservasi'
-        ELSE 'tersedia'
-    END AS status_hari_ini
-FROM ROOM r
-ORDER BY r.ROOM_ID;
+    r.CAPACITY,
+    r.HOURLY_RATE,
+    COALESCE(
+        (SELECT 'OCCUPIED' 
+         FROM REGISTRATION reg 
+         WHERE reg.ROOM_ID = r.ROOM_ID 
+           AND reg.RG_DATE = CURRENT_DATE
+           AND reg.REGISTRATION_STATUS NOT IN ('CANCELLED', 'FINISHED')
+           AND CURRENT_TIMESTAMP BETWEEN reg.START_TIME AND reg.END_TIME),
+        (SELECT 'RESERVED' 
+         FROM RESERVATION res 
+         WHERE res.ROOM_ID = r.ROOM_ID 
+           AND res.RV_DATE = CURRENT_DATE
+           AND CURRENT_TIMESTAMP BETWEEN res.START_TIME AND res.END_TIME),
+        (SELECT 'BOOKED' 
+         FROM (
+             SELECT ROOM_ID FROM REGISTRATION 
+             WHERE ROOM_ID = r.ROOM_ID 
+               AND RG_DATE = CURRENT_DATE
+               AND REGISTRATION_STATUS NOT IN ('CANCELLED', 'FINISHED')
+               AND CURRENT_TIMESTAMP < START_TIME
+             UNION 
+             SELECT ROOM_ID FROM RESERVATION 
+             WHERE ROOM_ID = r.ROOM_ID 
+               AND RV_DATE = CURRENT_DATE
+               AND CURRENT_TIMESTAMP < START_TIME
+         ) AS future_bookings),
+        r.STATUS
+    ) as CURRENT_STATUS,
+    
+    COALESCE(
+        (SELECT c.NAME 
+         FROM REGISTRATION reg 
+         JOIN CUSTOMER c ON reg.CUSTOMER_ID = c.CUSTOMER_ID
+         WHERE reg.ROOM_ID = r.ROOM_ID 
+           AND reg.RG_DATE = CURRENT_DATE
+           AND CURRENT_TIMESTAMP BETWEEN reg.START_TIME AND reg.END_TIME),
+        (SELECT c.NAME 
+         FROM RESERVATION res 
+         JOIN CUSTOMER c ON res.CUSTOMER_ID = c.CUSTOMER_ID
+         WHERE res.ROOM_ID = r.ROOM_ID 
+           AND res.RV_DATE = CURRENT_DATE
+           AND CURRENT_TIMESTAMP BETWEEN res.START_TIME AND res.END_TIME),
+        'TIDAK ADA'
+    ) as CURRENT_CUSTOMER,
+    
+    (SELECT 
+        TO_CHAR(MIN(start_time), 'HH24:MI') || ' - ' || TO_CHAR(MIN(end_time), 'HH24:MI')
+     FROM (
+         SELECT START_TIME, END_TIME 
+         FROM REGISTRATION 
+         WHERE ROOM_ID = r.ROOM_ID 
+           AND RG_DATE = CURRENT_DATE
+           AND REGISTRATION_STATUS NOT IN ('CANCELLED', 'FINISHED')
+           AND START_TIME > CURRENT_TIMESTAMP
+         UNION 
+         SELECT START_TIME, END_TIME 
+         FROM RESERVATION 
+         WHERE ROOM_ID = r.ROOM_ID 
+           AND RV_DATE = CURRENT_DATE
+           AND START_TIME > CURRENT_TIMESTAMP
+     ) AS next_bookings
+    ) as NEXT_BOOKING_TIME
 
+FROM ROOM r
+ORDER BY 
+    CASE COALESCE(
+        (SELECT 'OCCUPIED' FROM REGISTRATION reg WHERE reg.ROOM_ID = r.ROOM_ID 
+         AND reg.RG_DATE = CURRENT_DATE AND CURRENT_TIMESTAMP BETWEEN reg.START_TIME AND reg.END_TIME),
+        (SELECT 'RESERVED' FROM RESERVATION res WHERE res.ROOM_ID = r.ROOM_ID 
+         AND res.RV_DATE = CURRENT_DATE AND CURRENT_TIMESTAMP BETWEEN res.START_TIME AND res.END_TIME),
+        'AVAILABLE'
+    )
+        WHEN 'OCCUPIED' THEN 1
+        WHEN 'RESERVED' THEN 2
+        ELSE 3 
+    END,
+    r.ROOM_ID;
+
+CREATE OR REPLACE VIEW v_room_schedule_today AS
+SELECT 
+    r.ROOM_ID,
+    r.ROOM_TYPE,
+    r.CAPACITY,
+    'REGISTRATION' as BOOKING_TYPE,
+    reg.REGISTRATION_ID as BOOKING_ID,
+    c.NAME as CUSTOMER_NAME,
+    reg.START_TIME,
+    reg.END_TIME,
+    reg.REGISTRATION_STATUS as STATUS,
+    CASE 
+        WHEN CURRENT_TIMESTAMP BETWEEN reg.START_TIME AND reg.END_TIME THEN 'SEDANG BERLANGSUNG'
+        WHEN CURRENT_TIMESTAMP < reg.START_TIME THEN 'AKAN DATANG'
+        ELSE 'SELESAI'
+    END as TIME_STATUS
+FROM ROOM r
+JOIN REGISTRATION reg ON r.ROOM_ID = reg.ROOM_ID
+JOIN CUSTOMER c ON reg.CUSTOMER_ID = c.CUSTOMER_ID
+WHERE reg.RG_DATE = CURRENT_DATE
+  AND reg.REGISTRATION_STATUS NOT IN ('CANCELLED')
+
+UNION ALL
+
+SELECT 
+    r.ROOM_ID,
+    r.ROOM_TYPE,
+    r.CAPACITY,
+    'RESERVATION' as BOOKING_TYPE,
+    res.RESERVATION_ID as BOOKING_ID,
+    c.NAME as CUSTOMER_NAME,
+    res.START_TIME,
+    res.END_TIME,
+    'CONFIRMED' as STATUS,
+    CASE 
+        WHEN CURRENT_TIMESTAMP BETWEEN res.START_TIME AND res.END_TIME THEN 'SEDANG BERLANGSUNG'
+        WHEN CURRENT_TIMESTAMP < res.START_TIME THEN 'AKAN DATANG'
+        ELSE 'SELESAI'
+    END as TIME_STATUS
+FROM ROOM r
+JOIN RESERVATION res ON r.ROOM_ID = res.ROOM_ID
+JOIN CUSTOMER c ON res.CUSTOMER_ID = c.CUSTOMER_ID
+WHERE res.RV_DATE = CURRENT_DATE
+
+ORDER BY ROOM_ID, START_TIME;
+
+-- Lihat semua ruangan dan statusnya hari ini
+SELECT 
+    ROOM_ID,
+    ROOM_TYPE,
+    CAPACITY,
+    CURRENT_STATUS,
+    CURRENT_CUSTOMER,
+    NEXT_BOOKING_TIME
+FROM v_room_status_today;
 SELECT * FROM v_room_status_today;
+
+-- Hanya ruangan yang sedang digunakan
+SELECT * FROM v_room_status_today 
+WHERE CURRENT_STATUS = 'OCCUPIED';
+
+-- Hanya ruangan yang tersedia
+SELECT * FROM v_room_status_today 
+WHERE CURRENT_STATUS = 'AVAILABLE';
+
+-- Ruangan yang sudah dibooking (baik sedang atau akan datang)
+SELECT * FROM v_room_status_today 
+WHERE CURRENT_STATUS IN ('OCCUPIED', 'RESERVED', 'BOOKED');
+
+-- Semua jadwal booking hari ini
+SELECT 
+    ROOM_ID,
+    ROOM_TYPE,
+    CUSTOMER_NAME,
+    BOOKING_TYPE,
+    TO_CHAR(START_TIME, 'HH24:MI') as START,
+    TO_CHAR(END_TIME, 'HH24:MI') as END,
+    TIME_STATUS
+FROM v_room_schedule_today
+ORDER BY ROOM_ID, START_TIME;
+SELECT * FROM v_room_schedule_today;
 
