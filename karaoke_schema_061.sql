@@ -768,10 +768,10 @@ VALUES
 RETURNING RESERVATION_ID;
 
 -- Test 1: (H-5)
-CALL p_cancel_reservation(11); 
+CALL p_cancel_reservation(13); 
 
 -- Test 2: (H-2) 
-CALL p_cancel_reservation(12);
+CALL p_cancel_reservation(14);
 
 -- Test 3 iseng
 CALL p_cancel_reservation(999);
@@ -893,8 +893,15 @@ CREATE OR REPLACE TRIGGER tr_update_member_after_registration
     EXECUTE FUNCTION fn_update_member_visits();
 
 UPDATE REGISTRATION 
+SET REGISTRATION_STATUS = 'ONGOING' 
+WHERE REGISTRATION_ID = 1;
+SELECT * FROM REGISTRATION;
+SELECT * FROM MEMBER;
+
+UPDATE REGISTRATION 
 SET REGISTRATION_STATUS = 'FINISHED' 
 WHERE REGISTRATION_ID = 1;
+SELECT * FROM REGISTRATION;
 
 SELECT 
     c.CUSTOMER_ID,
