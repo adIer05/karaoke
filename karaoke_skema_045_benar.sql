@@ -543,40 +543,66 @@ INSERT INTO TIME_EXTEND (REGISTRATION_ID, RESERVATION_ID, EXTENSION_DURATION, EX
 (NULL,5,'00:25:00',22000);
 SELECT * FROM TIME_EXTEND;
 
-CREATE OR REPLACE FUNCTION is_room_available(
+-- Function Check room avail
+CREATE OR REPLACE FUNCTION check_room_available(
     p_room_id INT,
     p_start TIMESTAMP,
     p_end TIMESTAMP
 )
-RETURNS BOOLEAN AS $$
+RETURNS TABLE(
+    room_id INT,
+    start_time TIMESTAMP,
+    end_time TIMESTAMP,
+    is_available BOOLEAN,
+    conflict_from TEXT,
+    conflict_count INT
+) AS $$
 DECLARE
-    count_conflict INT;
+    reg_conflict INT;
+    res_conflict INT;
 BEGIN
-    -- Cek konflik dengan REGISTRATION
-    SELECT COUNT(*) INTO count_conflict
-    FROM REGISTRATION
-    WHERE ROOM_ID = p_room_id
-      AND (p_start < END_TIME AND p_end > START_TIME);
+    -- Hitung konflik REGISTRATION
+    SELECT COUNT(*)
+    INTO reg_conflict
+    FROM REGISTRATION r
+    WHERE r.room_id = p_room_id
+      AND (p_start < r.end_time AND p_end > r.start_time);
 
-    IF count_conflict > 0 THEN
-        RETURN FALSE;
+    -- Hitung konflik RESERVATION
+    SELECT COUNT(*)
+    INTO res_conflict
+    FROM RESERVATION rs
+    WHERE rs.room_id = p_room_id
+      AND (p_start < rs.end_time AND p_end > rs.start_time);
+
+    -- Return hasil test
+    room_id := p_room_id;
+    start_time := p_start;
+    end_time := p_end;
+    conflict_count := reg_conflict + res_conflict;
+
+    IF conflict_count > 0 THEN
+        is_available := FALSE;
+
+        IF reg_conflict > 0 AND res_conflict > 0 THEN
+            conflict_from := 'REGISTRATION + RESERVATION';
+        ELSIF reg_conflict > 0 THEN
+            conflict_from := 'REGISTRATION';
+        ELSE
+            conflict_from := 'RESERVATION';
+        END IF;
+
+    ELSE
+        is_available := TRUE;
+        conflict_from := 'NONE';
     END IF;
 
-    -- Cek konflik dengan RESERVATION
-    SELECT COUNT(*) INTO count_conflict
-    FROM RESERVATION
-    WHERE ROOM_ID = p_room_id
-      AND (p_start < END_TIME AND p_end > START_TIME);
-
-    IF count_conflict > 0 THEN
-        RETURN FALSE;
-    END IF;
-
-    RETURN TRUE;
+    RETURN NEXT;
 END;
 $$ LANGUAGE plpgsql;
 
 
+-- Procedure create reservation
 CREATE OR REPLACE PROCEDURE create_reservation(
     p_customer_id INT,
     p_room_id INT,
@@ -629,9 +655,7 @@ END;
 $$;
 
 
--- =====================================================
--- Function umum untuk cek bentrok jadwal
--- =====================================================
+--- Trigger check schedule conflict
 CREATE OR REPLACE FUNCTION check_schedule_conflict()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -671,18 +695,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- =====================================================
 -- Trigger untuk REGISTRATION
--- =====================================================
 DROP TRIGGER IF EXISTS trg_registration_conflict ON REGISTRATION;
 CREATE TRIGGER trg_registration_conflict
 BEFORE INSERT OR UPDATE ON REGISTRATION
 FOR EACH ROW
 EXECUTE FUNCTION check_schedule_conflict();
 
--- =====================================================
 -- Trigger untuk RESERVATION
--- =====================================================
 DROP TRIGGER IF EXISTS trg_reservation_conflict ON RESERVATION;
 CREATE TRIGGER trg_reservation_conflict
 BEFORE INSERT OR UPDATE ON RESERVATION
@@ -692,7 +712,7 @@ EXECUTE FUNCTION check_schedule_conflict();
 
 
 
-
+--Trigger check reservation rule
 CREATE OR REPLACE FUNCTION fn_check_reservation_rules()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -701,31 +721,34 @@ BEGIN
     -- Selisih hari antara reservasi dibuat dan hari H
     days_diff := NEW.RV_DATE - CURRENT_DATE;
 
-    -------------------------------------------------------------------
-    -- Aturan H-7 (maksimal 7 hari sebelum)
-    -------------------------------------------------------------------
+    
+    -- Aturan H-7 
+    
     IF days_diff > 7 THEN
-        RAISE EXCEPTION 'Reservasi hanya boleh dibuat maksimal H-7 sebelum hari H. (% days)', days_diff;
+        RAISE EXCEPTION 
+            'Reservasi hanya boleh dibuat maksimal H-7 sebelum hari H. (Selisih % hari)', 
+            days_diff;
     END IF;
 
-    -------------------------------------------------------------------
-    -- Aturan H-3 (DP wajib minimal 30%)
-    -------------------------------------------------------------------
-    IF days_diff < 3 THEN
-        IF NEW.PCT_DP < 0.30 THEN
-            RAISE EXCEPTION 'DP minimal 30%% untuk reservasi kurang dari H-3. (Saat ini %.0f%%)', NEW.PCT_DP * 100;
-        END IF;
+    
+    -- Aturan DP minimal 30% 
+    IF NEW.PCT_DP < 0.30 THEN
+        RAISE EXCEPTION 
+            'DP minimal 30%% dari total biaya. (Saat ini: %.0f%%)', 
+            NEW.PCT_DP * 100;
     END IF;
 
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_reservation_rules ON RESERVATION;
 
 CREATE TRIGGER trg_reservation_rules
 BEFORE INSERT OR UPDATE ON RESERVATION
 FOR EACH ROW
 EXECUTE FUNCTION fn_check_reservation_rules();
+
 
 CREATE OR REPLACE VIEW v_room_schedule AS
 (
@@ -764,23 +787,26 @@ UNION ALL
 
 
 -- Test Case Function
-SELECT is_room_available(1, '2025-11-20 10:00', '2025-11-20 12:00') AS available; -- True
-SELECT is_room_available(1, '2025-11-10 11:00', '2025-11-10 13:00') AS available; --False
-SELECT is_room_available(6, '2025-11-22 11:00', '2025-11-22 13:00') AS available; --False
-SELECT is_room_available(2, '2025-12-05 09:00', '2025-12-05 11:00') AS available; -- True
-SELECT is_room_available(3, '2025-11-12 13:30', '2025-11-12 15:00') AS available; -- False
+-- Bentrok dengan registrasi
+SELECT * FROM check_room_available(1, '2025-11-10 11:00', '2025-11-10 12:30');
+-- Berhasil
+SELECT * FROM check_room_available(1, '2025-11-10 07:00', '2025-11-10 09:00');
+--Bentrok Reservation
+SELECT * FROM check_room_available(6, '2025-11-22 11:00', '2025-11-22 12:30');
+
 
 
 --Test Case Procedure
 -- Test 1: Reservasi sukses
 CALL create_reservation(
-    1,                     -- customer_id
-    2,                     -- room_id
-    '2025-12-05 10:00',    -- start_time
-    '2025-12-05 12:00',    -- end_time
-    '2025-12-01',          -- reservation_date
-    0.3                     -- pct_dp (30%)
+    1,                  
+    1,                  
+    '2025-06-01 10:00',
+    '2025-06-01 12:00', 
+    '2025-05-25',       
+    0.3                 
 );
+
 
 
 -- Test 2: Reservasi gagal karena room bentrok
@@ -793,64 +819,68 @@ CALL create_reservation(
     0.3                     
 );
 
---Test Case Trigger pertama
--- Ini harus gagal karena bentrok dengan REGISTRATION_ID=1
+--Test Case Trigger check schedule conflict
+-- gagal karena bentrok 
 INSERT INTO REGISTRATION (CUSTOMER_ID, ROOM_ID, RG_DATE, START_TIME, END_TIME, REGISTRATION_STATUS)
 VALUES (11, 1, '2025-11-10', '2025-11-10 11:00', '2025-11-10 13:00', 'PENDING');
 
--- Ini harus gagal karena bentrok dengan RESERVATION_ID=1
+-- gagal karena bentrok 
 INSERT INTO RESERVATION (CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME, RESERVATION_DATE, PCT_DP, PAID_DP, LATE)
 VALUES (11, 6, '2025-11-22', '2025-11-22 11:30', '2025-11-22 12:30', '2025-11-21', 0.3, 15000, false);
 
 -- REGISTRATION aman
 INSERT INTO REGISTRATION (CUSTOMER_ID, ROOM_ID, RG_DATE, START_TIME, END_TIME, REGISTRATION_STATUS)
-VALUES (8, 1, '2025-11-10', '2025-11-10 12:30', '2025-11-10 13:30', 'PENDING');
+VALUES (8, 5, '2025-11-10', '2025-11-10 12:30', '2025-11-10 13:30', 'PENDING');
 
 -- RESERVATION aman
 INSERT INTO RESERVATION (CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME, RESERVATION_DATE, PCT_DP, PAID_DP, LATE)
-VALUES (8, 4, '2025-11-22', '2025-11-22 12:30', '2025-11-22 13:30', '2025-11-21', 0.3, 15000, false);
+VALUES (8, 7, '2025-11-22', '2025-11-22 12:30', '2025-11-22 13:30', '2025-11-21', 0.3, 15000, false);
 
 
---Test Case
--- Test 1: Reservasi lebih dari H-7 -> gagal
+--Test Case check reservation rules
+-- Test Berhasil
 INSERT INTO RESERVATION (
-    CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME, RESERVATION_DATE, PCT_DP, PAID_DP, LATE
-)
-VALUES
-(1, 2, CURRENT_DATE + 5, '2025-12-01 10:00', '2025-12-01 12:00', CURRENT_DATE, 0.30, 45000, FALSE);
--- Expected: berhasil insert
+    CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME,
+    RESERVATION_DATE, PCT_DP, PAID_DP
+) VALUES (
+    1, 1, CURRENT_DATE + 7,
+    CURRENT_DATE + 7 + TIME '9:00',
+    CURRENT_DATE + 7 + TIME '10:00',
+    CURRENT_DATE, 0.30, 50000
+);
 
+--Test Case gagal karena reservasi lebih dari h-7
 INSERT INTO RESERVATION (
-    CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME, RESERVATION_DATE, PCT_DP, PAID_DP, LATE
-)
-VALUES
-(2, 3, CURRENT_DATE + 10, '2025-12-06 10:00', '2025-12-06 12:00', CURRENT_DATE, 0.30, 45000, FALSE);
--- Expected: gagal, exception
--- "Reservasi hanya boleh dibuat maksimal H-7 sebelum hari H. (10 days)"
+    CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME,
+    RESERVATION_DATE, PCT_DP, PAID_DP
+) VALUES (
+    1, 1, CURRENT_DATE + 8,
+    CURRENT_DATE + 8 + TIME '13:00',
+    CURRENT_DATE + 8 + TIME '15:00',
+    CURRENT_DATE, 0.30, 50000
+);
 
+-- Test Case Berhasil
 INSERT INTO RESERVATION (
-    CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME, RESERVATION_DATE, PCT_DP, PAID_DP, LATE
-)
-VALUES
-(3, 1, CURRENT_DATE + 2, '2025-11-30 14:00', '2025-11-30 16:00', CURRENT_DATE, 0.25, 36000, FALSE);
--- Expected: gagal, exception
--- "DP minimal 30% untuk reservasi kurang dari H-3. (Saat ini 25%)"
+    CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME,
+    RESERVATION_DATE, PCT_DP, PAID_DP
+) VALUES (
+    1, 1, CURRENT_DATE + 3,
+    CURRENT_DATE + 3 + TIME '10:00',
+    CURRENT_DATE + 3 + TIME '12:00',
+    CURRENT_DATE, 0.30, 50000
+);
 
+-- Test Case gagal karena dp kurang
 INSERT INTO RESERVATION (
-    CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME, RESERVATION_DATE, PCT_DP, PAID_DP, LATE
-)
-VALUES
-(4, 4, CURRENT_DATE + 1, '2025-11-29 10:00', '2025-11-29 12:00', CURRENT_DATE, 0.30, 36000, FALSE);
--- Expected: berhasil insert
-
-INSERT INTO RESERVATION (
-    CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME, RESERVATION_DATE, PCT_DP, PAID_DP, LATE
-)
-VALUES
-(5, 5, CURRENT_DATE, '2025-11-28 10:00', '2025-11-28 12:00', CURRENT_DATE, 0.10, 12000, FALSE);
--- Expected: gagal, exception
--- "DP minimal 30% untuk reservasi kurang dari H-3. (Saat ini 10%)"
-
+    CUSTOMER_ID, ROOM_ID, RV_DATE, START_TIME, END_TIME,
+    RESERVATION_DATE, PCT_DP, PAID_DP
+) VALUES (
+    1, 7, CURRENT_DATE + 2,
+    CURRENT_DATE + 2 + TIME '10:00',
+    CURRENT_DATE + 2 + TIME '12:00',
+    CURRENT_DATE, 0.20, 50000
+);
 
 
 --Test Case
@@ -858,4 +888,3 @@ SELECT *
 FROM v_room_schedule
 WHERE ROOM_ID = 1
 ORDER BY DATE, START_TIME;
-
