@@ -598,23 +598,23 @@ $$;
 -- ===============================
 CREATE OR REPLACE PROCEDURE pay_registration(
     IN p_registration_id INT,
-    IN p_payment_method VARCHAR(10)
+    IN p_payment_method  VARCHAR(10)
 )
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    v_customer_id INT;
-    v_start_time TIMESTAMP;
-    v_end_time TIMESTAMP;
-    v_room_id INT;
-    v_hourly_rate NUMERIC(8,2);
+    v_customer_id    INT;
+    v_start_time     TIMESTAMP;
+    v_end_time       TIMESTAMP;
+    v_room_id        INT;
+    v_hourly_rate    NUMERIC(8,2);
     v_duration_hours NUMERIC(8,2);
-    v_base_cost NUMERIC(8,2);
-    v_ext_cost NUMERIC(8,2);
-    v_total_cost NUMERIC(8,2);
-    v_discount FLOAT8;
-    v_final_cost NUMERIC(8,2);
-    v_payment_id INT;
+    v_base_cost      NUMERIC(8,2);
+    v_ext_cost       NUMERIC(8,2);
+    v_total_cost     NUMERIC(8,2);
+    v_discount       FLOAT8;
+    v_final_cost     NUMERIC(8,2);
+    v_payment_id     INT;
 BEGIN
     -- 1. Ambil data registrasi
     SELECT customer_id, room_id, start_time, end_time
@@ -642,7 +642,7 @@ BEGIN
 
     v_base_cost := ROUND(v_hourly_rate * v_duration_hours, 2);
 
-    -- 4. Tambah biaya extend
+    -- 4. Tambah biaya extend (kalo ada)
     SELECT COALESCE(SUM(extension_cost),0)
     INTO   v_ext_cost
     FROM   time_extend
@@ -669,30 +669,51 @@ BEGIN
     RAISE NOTICE 'Final cost to pay     : Rp %', v_final_cost;
     RAISE NOTICE '==========================================';
 
-    -- 8. Simpan ke PAYMENT 
-    INSERT INTO payment(
-        registration_id,
-        reservation_id,
-        payment_time,
-        payment_method,
-        total_cost,
-        discount_member,
-        final_cost
-    )
-    VALUES (
-        p_registration_id,
-        NULL,
-        NOW(),
-        p_payment_method,
-        v_total_cost,
-        v_discount,
-        v_final_cost
-    )
-    RETURNING payment_id INTO v_payment_id;
+    -- 8. SIMPAN KE PAYMENT
+    SELECT payment_id
+    INTO   v_payment_id
+    FROM   payment
+    WHERE  registration_id = p_registration_id
+    ORDER BY payment_time ASC
+    LIMIT 1;
 
-    RAISE NOTICE 'Payment recorded with PAYMENT_ID = %', v_payment_id;
+    IF FOUND THEN
+        -- UPDATE  kalo extend
+        UPDATE payment
+        SET payment_time    = NOW(),
+            payment_method  = p_payment_method,
+            total_cost      = v_total_cost,
+            discount_member = v_discount,
+            final_cost      = v_final_cost
+        WHERE payment_id = v_payment_id;
 
-    -- 9. update status
+        RAISE NOTICE 'Payment UPDATED with PAYMENT_ID = %', v_payment_id;
+    ELSE
+        -- Belum ada payment 
+        INSERT INTO payment(
+            registration_id,
+            reservation_id,
+            payment_time,
+            payment_method,
+            total_cost,
+            discount_member,
+            final_cost
+        )
+        VALUES (
+            p_registration_id,
+            NULL,
+            NOW(),
+            p_payment_method,
+            v_total_cost,
+            v_discount,
+            v_final_cost
+        )
+        RETURNING payment_id INTO v_payment_id;
+
+        RAISE NOTICE 'Payment INSERTED with PAYMENT_ID = %', v_payment_id;
+    END IF;
+
+    -- 9. update status registrasi
     UPDATE registration
     SET registration_status = 'PAID'
     WHERE registration_id = p_registration_id;
@@ -1836,3 +1857,19 @@ ORDER BY
         ELSE 3 
     END,
     r.ROOM_ID;
+
+-- Test 1: Reservasi sukses
+CALL create_reservation(
+    1,
+    1,
+    '2025-11-30 10:00',
+    '2025-11-30 12:00',
+    '2025-11-27',
+    'QRIS',
+	 4);
+
+SELECT * FROM check_room_available(1, '2025-11-30 10:00', '2025-11-30 12:00');
+
+CALL extend_time('RES', 2, 45);
+
+call pay_reservation_settle(2, 'CARD');
