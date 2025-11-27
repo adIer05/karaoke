@@ -542,3 +542,1297 @@ INSERT INTO TIME_EXTEND (REGISTRATION_ID, RESERVATION_ID, EXTENSION_DURATION, EX
 (NULL,4,'00:10:00',10000),
 (NULL,5,'00:25:00',22000);
 SELECT * FROM TIME_EXTEND;
+
+-- ===============================
+-- FUNCTION TOTAL PAYMENT
+-- ===============================
+CREATE OR REPLACE FUNCTION calculate_total_payment(
+    p_total_cost      NUMERIC(8,2),
+    p_discount_member FLOAT8
+)
+RETURNS NUMERIC(8,2)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_final NUMERIC(8,2);
+BEGIN
+    v_final := p_total_cost - (p_total_cost * COALESCE(p_discount_member,0));
+    RETURN ROUND(v_final,2);
+END;
+$$;
+
+-- ===============================
+-- FUNCTION DISCOUNT MEMBER
+-- ===============================
+CREATE OR REPLACE FUNCTION get_discount_member(
+    p_customer_id INT
+)
+RETURNS FLOAT8
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_visits   INT;
+    v_discount FLOAT8 := 0;
+BEGIN
+    SELECT COALESCE(number_of_visits,0)
+    INTO v_visits
+    FROM member
+    WHERE customer_id = p_customer_id;
+
+    IF v_visits >= 30 THEN
+        v_discount := 0.15;   -- Platinum
+    ELSIF v_visits >= 15 THEN
+        v_discount := 0.10;   -- Gold
+    ELSIF v_visits >= 5 THEN
+        v_discount := 0.05;   -- Silver
+    ELSE
+        v_discount := 0.00;   -- Non-member / INACTIVE
+    END IF;
+
+    RETURN v_discount;
+END;
+$$;
+
+-- ===============================
+-- PROCEDURE PAYMENT REGISTRATION
+-- ===============================
+CREATE OR REPLACE PROCEDURE pay_registration(
+    IN p_registration_id INT,
+    IN p_payment_method VARCHAR(10)
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_customer_id INT;
+    v_start_time TIMESTAMP;
+    v_end_time TIMESTAMP;
+    v_room_id INT;
+    v_hourly_rate NUMERIC(8,2);
+    v_duration_hours NUMERIC(8,2);
+    v_base_cost NUMERIC(8,2);
+    v_ext_cost NUMERIC(8,2);
+    v_total_cost NUMERIC(8,2);
+    v_discount FLOAT8;
+    v_final_cost NUMERIC(8,2);
+    v_payment_id INT;
+BEGIN
+    -- 1. Ambil data registrasi
+    SELECT customer_id, room_id, start_time, end_time
+    INTO   v_customer_id, v_room_id, v_start_time, v_end_time
+    FROM   registration
+    WHERE  registration_id = p_registration_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Registration % not found', p_registration_id;
+    END IF;
+
+    -- 2. Ambil tarif ruangan
+    SELECT hourly_rate
+    INTO   v_hourly_rate
+    FROM   room
+    WHERE  room_id = v_room_id;
+
+    IF v_hourly_rate IS NULL THEN
+        RAISE EXCEPTION 'Room % not found or hourly_rate is NULL', v_room_id;
+    END IF;
+
+    -- 3. Hitung durasi dalam jam
+    v_duration_hours :=
+        EXTRACT(EPOCH FROM (v_end_time - v_start_time)) / 3600.0;
+
+    v_base_cost := ROUND(v_hourly_rate * v_duration_hours, 2);
+
+    -- 4. Tambah biaya extend
+    SELECT COALESCE(SUM(extension_cost),0)
+    INTO   v_ext_cost
+    FROM   time_extend
+    WHERE  registration_id = p_registration_id;
+
+    v_total_cost := v_base_cost + v_ext_cost;
+
+    -- 5. Ambil diskon membership 
+    v_discount := get_discount_member(v_customer_id);
+
+    -- 6. Hitung final cost
+    v_final_cost := calculate_total_payment(v_total_cost, v_discount);
+
+    -- 7. RAISE NOTICE summary
+    RAISE NOTICE '=== PAYMENT SUMMARY FOR REGISTRATION % ===', p_registration_id;
+    RAISE NOTICE 'Room ID               : %', v_room_id;
+    RAISE NOTICE 'Room hourly rate      : Rp %', v_hourly_rate;
+    RAISE NOTICE 'Duration (hours)      : %', v_duration_hours;
+    RAISE NOTICE 'Base room cost        : Rp %', v_base_cost;
+    RAISE NOTICE 'Extension cost        : Rp %', v_ext_cost;
+    RAISE NOTICE '------------------------------------------';
+    RAISE NOTICE 'Total cost            : Rp %', v_total_cost;
+    RAISE NOTICE 'Membership discount   : % %', v_discount * 100, '%';
+    RAISE NOTICE 'Final cost to pay     : Rp %', v_final_cost;
+    RAISE NOTICE '==========================================';
+
+    -- 8. Simpan ke PAYMENT 
+    INSERT INTO payment(
+        registration_id,
+        reservation_id,
+        payment_time,
+        payment_method,
+        total_cost,
+        discount_member,
+        final_cost
+    )
+    VALUES (
+        p_registration_id,
+        NULL,
+        NOW(),
+        p_payment_method,
+        v_total_cost,
+        v_discount,
+        v_final_cost
+    )
+    RETURNING payment_id INTO v_payment_id;
+
+    RAISE NOTICE 'Payment recorded with PAYMENT_ID = %', v_payment_id;
+
+    -- 9. update status
+    UPDATE registration
+    SET registration_status = 'PAID'
+    WHERE registration_id = p_registration_id;
+
+    RAISE NOTICE 'Registration % marked as PAID', p_registration_id;
+END;
+$$;
+
+-- =====================================
+-- PROCEDURE PAYMENT RESERVATION (LUNAS)
+-- =====================================
+CREATE OR REPLACE PROCEDURE pay_reservation_settle(
+    IN p_reservation_id INT,
+    IN p_payment_method VARCHAR(10)
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_customer_id     INT;
+    v_room_id         INT;
+    v_start_time      TIMESTAMP;
+    v_end_time        TIMESTAMP;
+    v_paid_dp         NUMERIC(8,2);
+    v_hourly_rate     NUMERIC(8,2);
+    v_duration_hours  NUMERIC(8,2);
+    v_base_cost       NUMERIC(8,2);
+    v_ext_cost        NUMERIC(8,2);
+    v_total_cost      NUMERIC(8,2);
+    v_remaining_cost  NUMERIC(8,2);
+    v_discount        FLOAT8;
+    v_final_cost      NUMERIC(8,2);
+    v_payment_id      INT;
+BEGIN
+    -- 1. Ambil data reservasi
+    SELECT customer_id, room_id, start_time, end_time, COALESCE(paid_dp,0)
+    INTO   v_customer_id, v_room_id, v_start_time, v_end_time, v_paid_dp
+    FROM   reservation
+    WHERE  reservation_id = p_reservation_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Reservation % not found', p_reservation_id;
+    END IF;
+
+    -- 2. Ambil tarif ruangan
+    SELECT hourly_rate
+    INTO   v_hourly_rate
+    FROM   room
+    WHERE  room_id = v_room_id;
+
+    IF v_hourly_rate IS NULL THEN
+        RAISE EXCEPTION 'Room % not found or hourly_rate is NULL', v_room_id;
+    END IF;
+
+    -- 3. Durasi dalam jam
+    v_duration_hours :=
+        EXTRACT(EPOCH FROM (v_end_time - v_start_time)) / 3600.0;
+
+    v_base_cost := ROUND(v_hourly_rate * v_duration_hours, 2);
+
+    -- 4. Biaya perpanjangan
+    SELECT COALESCE(SUM(extension_cost),0)
+    INTO   v_ext_cost
+    FROM   time_extend
+    WHERE  reservation_id = p_reservation_id;
+
+    v_total_cost := v_base_cost + v_ext_cost;
+
+    -- 5. Kurangi dengan DP
+    v_remaining_cost := v_total_cost - v_paid_dp;
+    IF v_remaining_cost < 0 THEN
+        v_remaining_cost := 0;
+    END IF;
+
+    -- 6. Diskon member
+    v_discount := get_discount_member(v_customer_id);
+
+    -- 7. Final cost setelah diskon 
+    v_final_cost := calculate_total_payment(v_remaining_cost, v_discount);
+
+    -- ====== SUMMARY PAYMENT
+    RAISE NOTICE '=== PAYMENT SUMMARY FOR RESERVATION % ===', p_reservation_id;
+    RAISE NOTICE 'Room ID               : %', v_room_id;
+    RAISE NOTICE 'Room hourly rate      : Rp %', v_hourly_rate;
+    RAISE NOTICE 'Duration (hours)      : %', v_duration_hours;
+    RAISE NOTICE 'Base room cost        : Rp %', v_base_cost;
+    RAISE NOTICE 'Extension cost        : Rp %', v_ext_cost;
+    RAISE NOTICE '------------------------------------------';
+    RAISE NOTICE 'Total cost            : Rp %', v_total_cost;
+    RAISE NOTICE 'DP already paid       : Rp %', v_paid_dp;
+    RAISE NOTICE 'Remaining before disc : Rp %', v_remaining_cost;
+    RAISE NOTICE 'Membership discount   : % %', v_discount * 100, '%';
+    RAISE NOTICE 'Final cost to pay     : Rp %', v_final_cost;
+    RAISE NOTICE '==========================================';
+
+    -- 8. CARI PAYMENT_ID YANG SAMA SAAT BAYAR DP
+    SELECT payment_id
+    INTO   v_payment_id
+    FROM   payment
+    WHERE  reservation_id = p_reservation_id
+    ORDER BY payment_time ASC
+    LIMIT 1;
+
+    IF FOUND THEN
+        -- CASE 1: ADA PAYMENT DP
+        UPDATE payment
+        SET payment_time    = NOW(),          
+            payment_method  = p_payment_method,
+            total_cost      = v_remaining_cost,
+            discount_member = v_discount,
+            final_cost      = v_final_cost
+        WHERE payment_id = v_payment_id;
+
+        RAISE NOTICE 'Payment UPDATED on existing PAYMENT_ID = %', v_payment_id;
+
+    ELSE
+        -- CASE 2: BELUM ADA PAYMENT DP 
+        INSERT INTO payment(
+            registration_id,
+            reservation_id,
+            payment_time,
+            payment_method,
+            total_cost,
+            discount_member,
+            final_cost
+        )
+        VALUES (
+            NULL,
+            p_reservation_id,
+            NOW(),
+            p_payment_method,
+            v_remaining_cost,
+            v_discount,
+            v_final_cost
+        )
+        RETURNING payment_id INTO v_payment_id;
+
+        RAISE NOTICE 'Payment INSERTED with new PAYMENT_ID = %', v_payment_id;
+    END IF;
+END;
+$$;
+
+-- =====================================
+-- PROCEDURE EXTEND TIME
+-- =====================================
+CREATE OR REPLACE PROCEDURE extend_time(
+    IN p_booking_type VARCHAR(3),   -- 'REG' atau 'RES'
+    IN p_booking_id INT,
+    IN p_minutes INT
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_room_id INT;
+    v_hourly_rate NUMERIC(8,2);
+    v_ext_cost NUMERIC(8,2);
+    v_ext_interval INTERVAL;
+    v_current_end TIMESTAMP;
+    v_new_end TIMESTAMP;
+    v_next_start TIMESTAMP;
+BEGIN
+    IF p_minutes <= 0 THEN
+        RAISE EXCEPTION 'Extension minutes must be > 0';
+    END IF;
+
+    v_ext_interval := (p_minutes || ' minutes')::INTERVAL;
+
+    -- 1. Ambil END_TIME & ROOM_ID dari booking
+    IF p_booking_type = 'REG' THEN
+        SELECT end_time, room_id
+        INTO   v_current_end, v_room_id
+        FROM   registration
+        WHERE  registration_id = p_booking_id;
+
+        IF v_current_end IS NULL THEN
+            RAISE EXCEPTION 'Registration % not found or END_TIME NULL', p_booking_id;
+        END IF;
+
+    ELSIF p_booking_type = 'RES' THEN
+        SELECT end_time, room_id
+        INTO   v_current_end, v_room_id
+        FROM   reservation
+        WHERE  reservation_id = p_booking_id;
+
+        IF v_current_end IS NULL THEN
+            RAISE EXCEPTION 'Reservation % not found or END_TIME NULL', p_booking_id;
+        END IF;
+
+    ELSE
+        RAISE EXCEPTION 'Unknown booking_type: %, use REG or RES', p_booking_type;
+    END IF;
+
+    -- 2. Ambil tarif ruangan
+    SELECT hourly_rate
+    INTO   v_hourly_rate
+    FROM   room
+    WHERE  room_id = v_room_id;
+
+    IF v_hourly_rate IS NULL THEN
+        RAISE EXCEPTION 'Room % not found or hourly_rate NULL', v_room_id;
+    END IF;
+
+    -- 3. Cari booking berikutnya di room yang sama
+    WITH next_bookings AS (
+        -- Registrasi lain di room yang sama
+        SELECT r2.start_time AS start_time
+        FROM   registration r2
+        WHERE  r2.room_id = v_room_id
+          AND  r2.start_time > v_current_end
+          AND  (p_booking_type <> 'REG'
+                OR r2.registration_id <> p_booking_id)
+
+        UNION ALL
+
+        -- Reservasi lain di room yang sama
+        SELECT rv2.start_time AS start_time
+        FROM   reservation rv2
+        WHERE  rv2.room_id = v_room_id
+          AND  rv2.start_time > v_current_end
+          AND  (p_booking_type <> 'RES'
+                OR rv2.reservation_id <> p_booking_id)
+    )
+    SELECT MIN(start_time)
+    INTO   v_next_start
+    FROM   next_bookings;
+
+    -- Hitung END_TIME baru setelah extend
+    v_new_end := v_current_end + v_ext_interval;
+
+    -- 4. Validasi: kalau ada booking berikutnya
+    IF v_next_start IS NOT NULL THEN
+        IF v_new_end > (v_next_start - INTERVAL '30 minutes') THEN
+            RAISE EXCEPTION
+                'Cannot extend: new end time % is too close to next booking at % (min 30 minutes gap)',
+                v_new_end, v_next_start;
+        END IF;
+    END IF;
+
+    -- 5. Hitung biaya extend & simpan ke TIME_EXTEND
+    v_ext_cost := v_hourly_rate * (p_minutes::NUMERIC / 60.0);
+
+    IF p_booking_type = 'REG' THEN
+        INSERT INTO time_extend(
+            registration_id, reservation_id, extension_duration, extension_cost
+        )
+        VALUES (
+            p_booking_id, NULL, v_ext_interval, v_ext_cost
+        );
+
+        UPDATE registration
+        SET end_time = v_new_end
+        WHERE registration_id = p_booking_id;
+
+    ELSE  -- 'RES'
+        INSERT INTO time_extend(
+            registration_id, reservation_id, extension_duration, extension_cost
+        )
+        VALUES (
+            NULL, p_booking_id, v_ext_interval, v_ext_cost
+        );
+
+        UPDATE reservation
+        SET end_time = v_new_end
+        WHERE reservation_id = p_booking_id;
+    END IF;
+
+    -- 6. RAISE NOTICE summary
+    RAISE NOTICE 'Extend % ID % in room % by % minutes',
+                 p_booking_type, p_booking_id, v_room_id, p_minutes;
+    RAISE NOTICE 'Old END_TIME: %, New END_TIME: %', v_current_end, v_new_end;
+
+    IF v_next_start IS NOT NULL THEN
+        RAISE NOTICE 'Next booking in this room starts at: % (min 30 min gap enforced)', v_next_start;
+    ELSE
+        RAISE NOTICE 'No next booking in this room – extension is only limited by duration requested.';
+    END IF;
+
+    RAISE NOTICE 'Extra cost for this extension: Rp %', v_ext_cost;
+END;
+$$;
+
+-- =====================================
+-- TRIGGER PAYMENT 
+-- =====================================
+CREATE OR REPLACE FUNCTION trg_payment_calculate_total()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.final_cost IS NULL THEN
+        NEW.final_cost := calculate_total_payment(
+            NEW.total_cost,
+            COALESCE(NEW.discount_member,0)
+        );
+    END IF;
+
+    IF NEW.payment_time IS NULL THEN
+        NEW.payment_time := NOW();
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_before_insert_payment
+BEFORE INSERT ON payment
+FOR EACH ROW
+EXECUTE FUNCTION trg_payment_calculate_total();
+
+-- =====================================
+-- VIEW MEMBERSHIP STATUS
+-- =====================================
+CREATE OR REPLACE VIEW v_membership_status AS
+SELECT
+    c.customer_id,
+    c.name,
+    m.member_status,
+    m.number_of_visits,
+    m.discount_member
+FROM customer c
+LEFT JOIN member m
+       ON m.customer_id = c.customer_id;
+
+-- =====================================
+-- VIEW SONG POPULARITY
+-- =====================================
+CREATE OR REPLACE VIEW v_song_popularity AS
+SELECT
+    s.songs_id,
+    s.title,
+    COUNT(sa.activity_id) AS total_play,
+    SUM(
+        CASE WHEN sa.played_percentage = 100 THEN 1 ELSE 0 END
+    ) AS full_play_count,
+    CASE
+        WHEN COUNT(sa.activity_id) = 0 THEN 0
+        ELSE ROUND(
+            SUM(
+                CASE WHEN sa.played_percentage = 100 THEN 1 ELSE 0 END
+            )::NUMERIC * 100
+            / COUNT(sa.activity_id),
+            2
+        )
+    END AS popularity_percentage
+FROM songs s
+LEFT JOIN pick p
+       ON p.songs_id = s.songs_id
+LEFT JOIN song_activities sa
+       ON sa.activity_id = p.activity_id
+GROUP BY s.songs_id, s.title
+ORDER BY popularity_percentage DESC;
+
+-- Function Check room avail
+CREATE OR REPLACE FUNCTION check_room_available(
+    p_room_id INT,
+    p_start TIMESTAMP,
+    p_end TIMESTAMP
+)
+RETURNS TABLE(
+    room_id INT,
+    start_time TIMESTAMP,
+    end_time TIMESTAMP,
+    is_available BOOLEAN,
+    conflict_from TEXT,
+    conflict_count INT
+) AS $$
+DECLARE
+    reg_conflict INT;
+    res_conflict INT;
+BEGIN
+    -- Hitung konflik REGISTRATION
+    SELECT COUNT(*)
+    INTO reg_conflict
+    FROM REGISTRATION r
+    WHERE r.room_id = p_room_id
+      AND (p_start < r.end_time AND p_end > r.start_time);
+
+    -- Hitung konflik RESERVATION
+    SELECT COUNT(*)
+    INTO res_conflict
+    FROM RESERVATION rs
+    WHERE rs.room_id = p_room_id
+      AND (p_start < rs.end_time AND p_end > rs.start_time);
+
+    -- Return hasil test
+    room_id := p_room_id;
+    start_time := p_start;
+    end_time := p_end;
+    conflict_count := reg_conflict + res_conflict;
+
+    IF conflict_count > 0 THEN
+        is_available := FALSE;
+
+        IF reg_conflict > 0 AND res_conflict > 0 THEN
+            conflict_from := 'REGISTRATION + RESERVATION';
+        ELSIF reg_conflict > 0 THEN
+            conflict_from := 'REGISTRATION';
+        ELSE
+            conflict_from := 'RESERVATION';
+        END IF;
+
+    ELSE
+        is_available := TRUE;
+        conflict_from := 'NONE';
+    END IF;
+
+    RETURN NEXT;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Procedure create reservation
+CREATE OR REPLACE PROCEDURE create_reservation(
+    p_customer_id      INT,
+    p_room_id          INT,
+    p_start            TIMESTAMP,
+    p_end              TIMESTAMP,
+    p_reservation_date DATE,
+    p_payment_method   VARCHAR(10),
+    p_num_people       INT             
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    -- Untuk room & kapasitas
+    v_room_capacity   INT;
+    v_hourly_rate     NUMERIC(8,2);
+
+    -- Untuk cek ketersediaan 
+    v_is_available    BOOLEAN;
+    v_conflict_from   TEXT;
+    v_conflict_count  INT;
+
+    -- Untuk perhitungan biaya & DP
+    v_duration_hours  NUMERIC;
+    v_total_cost      NUMERIC(8,2);
+    v_paid_dp         NUMERIC(8,2);
+    v_pct_dp CONSTANT FLOAT := 0.30;   
+
+    -- Untuk insert
+    v_reservation_id  INT;
+    v_payment_id      INT;
+BEGIN
+    -------------------------------------------------------------------
+    -- 0. Ambil kapasitas & hourly rate ruangan
+    -------------------------------------------------------------------
+    SELECT capacity, hourly_rate
+    INTO   v_room_capacity, v_hourly_rate
+    FROM   room
+    WHERE  room_id = p_room_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Room ID % not found', p_room_id;
+    END IF;
+
+    -------------------------------------------------------------------
+    -- 0a. Cek kapasitas ruangan 
+    -------------------------------------------------------------------
+    IF p_num_people > v_room_capacity THEN
+        RAISE EXCEPTION
+            'Room capacity (%) is insufficient for % people',
+            v_room_capacity, p_num_people;
+    END IF;
+
+    -------------------------------------------------------------------
+    -- 1. Cek jadwal ruangan 
+    -------------------------------------------------------------------
+    SELECT is_available, conflict_from, conflict_count
+    INTO   v_is_available, v_conflict_from, v_conflict_count
+    FROM   check_room_available(p_room_id, p_start, p_end);
+
+    IF NOT v_is_available THEN
+        RAISE EXCEPTION
+            'Room % is not available between % and %. Conflict from: % (total % konflik)',
+            p_room_id, p_start, p_end, v_conflict_from, v_conflict_count;
+    END IF;
+
+    -------------------------------------------------------------------
+    -- 2. Hitung durasi
+    -------------------------------------------------------------------
+    v_duration_hours := EXTRACT(EPOCH FROM (p_end - p_start)) / 3600;
+
+    IF v_duration_hours <= 0 THEN
+        RAISE EXCEPTION 'Invalid duration. End time must be after start time';
+    END IF;
+
+    -------------------------------------------------------------------
+    -- 3. Hitung total biaya & DP (30%)
+    -------------------------------------------------------------------
+    v_total_cost := v_hourly_rate * v_duration_hours;
+    v_paid_dp    := v_total_cost * v_pct_dp;
+
+    -------------------------------------------------------------------
+    -- 4. Simpan jumlah orang ke CUSTOMER 
+    -------------------------------------------------------------------
+    UPDATE customer
+    SET people_coming = p_num_people
+    WHERE customer_id = p_customer_id;
+
+    -------------------------------------------------------------------
+    -- 5. Insert ke RESERVATION
+    -------------------------------------------------------------------
+    INSERT INTO reservation (
+        customer_id, room_id, rv_date, start_time, end_time,
+        reservation_date, pct_dp, paid_dp, late
+    )
+    VALUES (
+        p_customer_id,
+        p_room_id,
+        DATE(p_start),
+        p_start,
+        p_end,
+        p_reservation_date,
+        v_pct_dp,
+        v_paid_dp,
+        FALSE
+    )
+    RETURNING reservation_id INTO v_reservation_id;
+
+    RAISE NOTICE
+        '[RESERVATION] ID: %, Room: %, Total cost: %, DP (30%%): %',
+        v_reservation_id, p_room_id, v_total_cost, v_paid_dp;
+
+    -------------------------------------------------------------------
+    -- 6. Insert PAYMENT untuk DP (tanpa diskon member)
+    -------------------------------------------------------------------
+    INSERT INTO payment(
+        registration_id,
+        reservation_id,
+        payment_method,
+        total_cost,
+        discount_member
+    )
+    VALUES (
+        NULL,
+        v_reservation_id,
+        p_payment_method,
+        v_paid_dp,
+        0  
+    )
+    RETURNING payment_id INTO v_payment_id;
+
+    RAISE NOTICE
+        '[PAYMENT] DP recorded. PAYMENT_ID = %, Amount = %',
+        v_payment_id, v_paid_dp;
+END;
+$$;
+
+
+
+--- Trigger check schedule conflict
+CREATE OR REPLACE FUNCTION check_schedule_conflict()
+RETURNS TRIGGER AS $$
+DECLARE
+    conflict_count INT;
+    tbl_name TEXT;
+BEGIN
+    -- Tentukan tabel
+    tbl_name := TG_TABLE_NAME;
+
+    IF tbl_name = 'registration' THEN
+        SELECT COUNT(*) INTO conflict_count
+        FROM REGISTRATION
+        WHERE ROOM_ID = NEW.ROOM_ID
+          AND NEW.START_TIME < END_TIME
+          AND NEW.END_TIME > START_TIME
+          AND REGISTRATION_ID <> COALESCE(NEW.REGISTRATION_ID, 0);
+
+        IF conflict_count > 0 THEN
+            RAISE EXCEPTION 'Jadwal bentrok untuk REGISTRATION di ROOM_ID %', NEW.ROOM_ID;
+        END IF;
+
+    ELSIF tbl_name = 'reservation' THEN
+        SELECT COUNT(*) INTO conflict_count
+        FROM RESERVATION
+        WHERE ROOM_ID = NEW.ROOM_ID
+          AND NEW.START_TIME < END_TIME
+          AND NEW.END_TIME > START_TIME
+          AND RESERVATION_ID <> COALESCE(NEW.RESERVATION_ID, 0);
+
+        IF conflict_count > 0 THEN
+            RAISE EXCEPTION 'Jadwal bentrok untuk RESERVATION di ROOM_ID %', NEW.ROOM_ID;
+        END IF;
+
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger untuk REGISTRATION
+DROP TRIGGER IF EXISTS trg_registration_conflict ON REGISTRATION;
+CREATE TRIGGER trg_registration_conflict
+BEFORE INSERT OR UPDATE ON REGISTRATION
+FOR EACH ROW
+EXECUTE FUNCTION check_schedule_conflict();
+
+-- Trigger untuk RESERVATION
+DROP TRIGGER IF EXISTS trg_reservation_conflict ON RESERVATION;
+CREATE TRIGGER trg_reservation_conflict
+BEFORE INSERT OR UPDATE ON RESERVATION
+FOR EACH ROW
+EXECUTE FUNCTION check_schedule_conflict();
+
+
+
+
+--Trigger check reservation rule
+CREATE OR REPLACE FUNCTION fn_check_reservation_rules()
+RETURNS TRIGGER AS $$
+DECLARE
+    days_diff INT;
+BEGIN
+    -- Selisih hari antara reservasi dibuat dan hari H
+    days_diff := NEW.RV_DATE - CURRENT_DATE;
+
+    
+    -- Aturan H-7 
+    
+    IF days_diff > 7 THEN
+        RAISE EXCEPTION 
+            'Reservasi hanya boleh dibuat maksimal H-7 sebelum hari H. (Selisih % hari)', 
+            days_diff;
+    END IF;
+
+    
+    -- Aturan DP minimal 30% 
+    IF NEW.PCT_DP < 0.30 THEN
+        RAISE EXCEPTION 
+            'DP minimal 30%% dari total biaya. (Saat ini: %.0f%%)', 
+            NEW.PCT_DP * 100;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_reservation_rules ON RESERVATION;
+
+CREATE TRIGGER trg_reservation_rules
+BEFORE INSERT OR UPDATE ON RESERVATION
+FOR EACH ROW
+EXECUTE FUNCTION fn_check_reservation_rules();
+
+
+CREATE OR REPLACE VIEW v_room_schedule AS
+(
+    -- Data dari RESERVATION
+    SELECT
+        r.ROOM_ID,
+        r.RESERVATION_ID AS ID,
+        'RESERVATION' AS SOURCE,
+        r.CUSTOMER_ID,
+        r.START_TIME,
+        r.END_TIME,
+        r.RV_DATE AS DATE,
+        'Reserved' AS STATUS,
+        r.PCT_DP,
+        r.PAID_DP,
+        r.LATE
+    FROM RESERVATION r
+)
+UNION ALL
+(
+    -- Data dari REGISTRATION
+    SELECT
+        rg.ROOM_ID,
+        rg.REGISTRATION_ID AS ID,
+        'REGISTRATION' AS SOURCE,
+        rg.CUSTOMER_ID,
+        rg.START_TIME,
+        rg.END_TIME,
+        CAST(rg.RG_DATE AS DATE) AS DATE,
+        'Booked' AS STATUS,
+        NULL AS PCT_DP,
+        NULL AS PAID_DP,
+        NULL AS LATE
+    FROM REGISTRATION rg
+);
+
+/*============================================================================
+     Fungsi untuk menentukan level membership berdasarkan NUMBER_OF_VISITS
+=============================================================================*/
+DROP FUNCTION IF EXISTS fn_membership_level(p_customer_id INTEGER);
+
+CREATE OR REPLACE FUNCTION fn_membership_level(p_customer_id INTEGER)
+RETURNS VARCHAR AS $$
+DECLARE
+    v_visit_count INTEGER;
+    v_member_status VARCHAR(9);
+BEGIN
+    SELECT NUMBER_OF_VISITS INTO v_visit_count
+    FROM MEMBER 
+    WHERE CUSTOMER_ID = p_customer_id;
+    
+    -- If customer not found in MEMBER table, return 'NON-MEMBER'
+    IF NOT FOUND THEN
+        RETURN 'NON-MEMBER';
+    END IF;
+    
+    IF v_visit_count >= 30 THEN
+        v_member_status := 'Platinum';
+    ELSIF v_visit_count >= 15 THEN
+        v_member_status := 'Gold';
+    ELSIF v_visit_count >= 5 THEN
+        v_member_status := 'Silver';
+    ELSE
+        v_member_status := 'INACTIVE';
+    END IF;
+    
+    RETURN v_member_status;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT 
+    c.CUSTOMER_ID,
+    c.NAME,
+    m.NUMBER_OF_VISITS,
+    fn_membership_level(c.CUSTOMER_ID) as membership_level
+FROM CUSTOMER c
+LEFT JOIN MEMBER m ON c.CUSTOMER_ID = m.CUSTOMER_ID
+WHERE c.CUSTOMER_ID IN (1, 2, 3, 4, 5);
+
+SELECT 
+    c.CUSTOMER_ID,
+    c.NAME,
+    m.NUMBER_OF_VISITS,
+    m.MEMBER_STATUS as current_status,
+    fn_membership_level(c.CUSTOMER_ID) as calculated_level
+FROM CUSTOMER c
+JOIN MEMBER m ON c.CUSTOMER_ID = m.CUSTOMER_ID
+ORDER BY c.CUSTOMER_ID;
+
+/*============================================================================
+                 Prosedur untuk registrasi on-the-spot		 
+=============================================================================*/
+DROP PROCEDURE IF EXISTS sp_create_registration(
+    p_customer_id INTEGER,
+    p_room_id INTEGER,
+    p_date DATE,
+    p_start TIMESTAMP,
+    p_end TIMESTAMP,
+    p_num_people INTEGER
+);
+
+CREATE OR REPLACE PROCEDURE sp_create_registration(
+    p_customer_id INTEGER,
+    p_room_id INTEGER,
+    p_date DATE,
+    p_start TIMESTAMP,
+    p_end TIMESTAMP,
+    p_num_people INTEGER
+)
+AS $$
+DECLARE
+    v_room_capacity INTEGER;
+    v_room_status VARCHAR(20);
+    v_is_available BOOLEAN;
+    v_registration_id INTEGER;
+    v_duration_hours NUMERIC;
+    v_total_cost NUMERIC(8,2);
+    v_hourly_rate NUMERIC(8,2);
+    v_discount_member FLOAT8;
+    v_final_cost NUMERIC(8,2);
+BEGIN
+    SELECT CAPACITY, STATUS, HOURLY_RATE 
+    INTO v_room_capacity, v_room_status, v_hourly_rate
+    FROM ROOM 
+    WHERE ROOM_ID = p_room_id;
+    
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Room ID % not found', p_room_id;
+    END IF;
+    
+    IF p_num_people > v_room_capacity THEN
+        RAISE EXCEPTION 'Room capacity (%) is insufficient for % people', 
+            v_room_capacity, p_num_people;
+    END IF;
+    
+    IF v_room_status != 'AVAILABLE' THEN
+        RAISE EXCEPTION 'Room is not available. Current status: %', v_room_status;
+    END IF;
+    
+    PERFORM 1 FROM REGISTRATION 
+    WHERE ROOM_ID = p_room_id 
+      AND RG_DATE = p_date
+      AND (
+        (START_TIME <= p_start AND END_TIME > p_start) OR
+        (START_TIME < p_end AND END_TIME >= p_end) OR
+        (START_TIME >= p_start AND END_TIME <= p_end)
+      )
+      AND REGISTRATION_STATUS != 'CANCELLED';
+    
+    IF FOUND THEN
+        RAISE EXCEPTION 'Room is already booked for the selected time period';
+    END IF;
+   
+    PERFORM 1 FROM RESERVATION 
+    WHERE ROOM_ID = p_room_id 
+      AND RV_DATE = p_date
+      AND (
+        (START_TIME <= p_start AND END_TIME > p_start) OR
+        (START_TIME < p_end AND END_TIME >= p_end) OR
+        (START_TIME >= p_start AND END_TIME <= p_end)
+      );
+    
+    IF FOUND THEN
+        RAISE EXCEPTION 'Room is reserved for the selected time period';
+    END IF;
+    
+    v_duration_hours := EXTRACT(EPOCH FROM (p_end - p_start)) / 3600;
+    
+    IF v_duration_hours <= 0 THEN
+        RAISE EXCEPTION 'Invalid time duration. End time must be after start time';
+    END IF;
+    
+    v_total_cost := v_hourly_rate * v_duration_hours;
+    
+    SELECT DISCOUNT_MEMBER INTO v_discount_member
+    FROM MEMBER 
+    WHERE CUSTOMER_ID = p_customer_id;
+    
+    IF NOT FOUND THEN
+        v_discount_member := 0;
+    END IF;
+    
+    v_final_cost := v_total_cost * (1 - v_discount_member);
+    
+    INSERT INTO REGISTRATION (
+        CUSTOMER_ID, ROOM_ID, RG_DATE, START_TIME, END_TIME, REGISTRATION_STATUS
+    ) VALUES (
+        p_customer_id, p_room_id, p_date, p_start, p_end, 'CONFIRMED'
+    ) RETURNING REGISTRATION_ID INTO v_registration_id;
+    
+    UPDATE ROOM SET STATUS = 'OCCUPIED' WHERE ROOM_ID = p_room_id;
+    
+    UPDATE CUSTOMER SET PEOPLE_COMING = p_num_people 
+    WHERE CUSTOMER_ID = p_customer_id;
+    
+    RAISE NOTICE 'Registration successful!';
+    RAISE NOTICE 'Registration ID: %, Total Cost: %, Discount: %, Final Cost: %', 
+        v_registration_id, v_total_cost, (v_discount_member * 100) || '%', v_final_cost;
+    
+EXCEPTION
+    WHEN others THEN
+        RAISE EXCEPTION 'Registration failed: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+/*============================================================================
+                    Prosedur untuk cancel reservation		 
+=============================================================================*/
+CREATE OR REPLACE PROCEDURE p_cancel_reservation(p_reservation_id INTEGER)
+AS $$
+DECLARE
+    v_reservation_record RECORD;
+    v_days_before INTEGER;
+    v_can_cancel BOOLEAN;
+    v_room_id INTEGER;
+BEGIN
+    SELECT 
+        r.RESERVATION_ID,
+        r.RV_DATE,
+        r.ROOM_ID,
+        r.START_TIME,
+        c.NAME as customer_name
+    INTO v_reservation_record
+    FROM RESERVATION r
+    JOIN CUSTOMER c ON r.CUSTOMER_ID = c.CUSTOMER_ID
+    WHERE r.RESERVATION_ID = p_reservation_id;
+    
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Reservation ID % not found', p_reservation_id;
+    END IF;
+    
+    v_days_before := v_reservation_record.RV_DATE - CURRENT_DATE;
+    
+    IF v_days_before < 3 THEN
+        RAISE EXCEPTION 'Cannot cancel reservation. Cancellation must be at least 3 days before reservation date. Current: % days before', v_days_before;
+    END IF;
+    
+    v_room_id := v_reservation_record.ROOM_ID;
+    
+    DELETE FROM RESERVATION 
+    WHERE RESERVATION_ID = p_reservation_id;
+    
+    UPDATE ROOM 
+    SET STATUS = 'AVAILABLE' 
+    WHERE ROOM_ID = v_room_id;
+    
+    RAISE NOTICE 'Reservation ID % for % on % has been successfully cancelled.', 
+        p_reservation_id, 
+        v_reservation_record.customer_name,
+        v_reservation_record.RV_DATE;
+        
+EXCEPTION
+    WHEN others THEN
+        RAISE EXCEPTION 'Cancellation failed: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+/*============================================================================
+                   Prosedur untuk kasih alternatif jadwal	 
+=============================================================================*/
+DROP PROCEDURE IF EXISTS sp_suggest_alternative_schedule(
+    p_date DATE,
+    p_start TIMESTAMP,
+    p_end TIMESTAMP,
+    p_num_people INTEGER
+);
+
+CREATE OR REPLACE PROCEDURE sp_suggest_alternative_schedule(
+    p_date DATE,
+    p_start TIMESTAMP,
+    p_end TIMESTAMP,
+    p_num_people INTEGER
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    r RECORD;
+    conflict_count INTEGER;
+BEGIN
+    RAISE NOTICE '--- SUGGEST ALTERNATIVE SCHEDULE ---';
+    RAISE NOTICE 'Requested: % to %, % people', p_start, p_end, p_num_people;
+
+    FOR r IN
+        SELECT ROOM_ID, ROOM_TYPE, CAPACITY
+        FROM ROOM
+        WHERE CAPACITY >= p_num_people
+        ORDER BY CAPACITY ASC
+    LOOP
+        SELECT COUNT(*) INTO conflict_count
+        FROM (
+                SELECT room_id, rg_date AS the_date, start_time, end_time
+                FROM REGISTRATION
+                WHERE room_id = r.room_id AND rg_date = p_date
+
+                UNION ALL
+
+                SELECT room_id, rv_date AS the_date, start_time, end_time
+                FROM RESERVATION
+                WHERE room_id = r.room_id AND rv_date = p_date
+             ) AS bookings
+        WHERE (p_start, p_end) OVERLAPS (start_time, end_time);
+
+        IF conflict_count = 0 THEN
+            RAISE NOTICE 'Recommended Room: % (ID=%) | Capacity %',
+                r.room_type, r.room_id, r.capacity;
+
+            RAISE NOTICE 'Suggested Schedule: % → %', p_start, p_end;
+            RETURN;
+        END IF;
+    END LOOP;
+
+    RAISE NOTICE 'No alternative room & schedule available.';
+END;
+$$;
+
+
+/*============================================================================
+            Trigger untuk cek kapasitas ruangan ≥ jumlah orang
+=============================================================================*/
+DROP FUNCTION IF EXISTS fn_validate_room_capacity();
+
+CREATE OR REPLACE FUNCTION fn_validate_room_capacity()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_room_capacity INTEGER;
+    v_people_coming INTEGER;
+BEGIN
+    SELECT CAPACITY INTO v_room_capacity
+    FROM ROOM 
+    WHERE ROOM_ID = NEW.ROOM_ID;
+    
+    SELECT PEOPLE_COMING INTO v_people_coming
+    FROM CUSTOMER 
+    WHERE CUSTOMER_ID = NEW.CUSTOMER_ID;
+    
+    IF v_people_coming > v_room_capacity THEN
+        RAISE EXCEPTION 'Room capacity (%) exceeded. Customer has % people', 
+            v_room_capacity, v_people_coming;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- untuk registrasi
+CREATE OR REPLACE TRIGGER tr_validate_registration_capacity
+    BEFORE INSERT OR UPDATE ON REGISTRATION
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_validate_room_capacity();
+
+-- untuk reservasi
+CREATE OR REPLACE TRIGGER tr_validate_reservation_capacity
+    BEFORE INSERT OR UPDATE ON RESERVATION
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_validate_room_capacity();
+
+/*============================================================================
+         Trigger untuk auto-update jumlah kedatangan & level membership
+=============================================================================*/
+DROP FUNCTION IF EXISTS fn_update_member_visits();
+
+CREATE OR REPLACE FUNCTION fn_update_member_visits()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_visit_count INTEGER;
+    v_new_member_status VARCHAR(9);
+BEGIN
+    -- Hanya diproses jika registration jadi 'FINISHED'
+    IF (TG_OP = 'INSERT' AND NEW.REGISTRATION_STATUS = 'FINISHED') OR
+       (TG_OP = 'UPDATE' AND NEW.REGISTRATION_STATUS = 'FINISHED' AND OLD.REGISTRATION_STATUS != 'FINISHED') THEN
+        
+        IF EXISTS (SELECT 1 FROM MEMBER WHERE CUSTOMER_ID = NEW.CUSTOMER_ID) THEN
+            -- Increment visit_count
+            UPDATE MEMBER 
+            SET NUMBER_OF_VISITS = NUMBER_OF_VISITS + 1
+            WHERE CUSTOMER_ID = NEW.CUSTOMER_ID
+            RETURNING NUMBER_OF_VISITS INTO v_visit_count;
+
+            IF v_visit_count >= 30 THEN
+                v_new_member_status := 'Platinum';
+            ELSIF v_visit_count >= 15 THEN
+                v_new_member_status := 'Gold';
+            ELSIF v_visit_count >= 5 THEN
+                v_new_member_status := 'Silver';
+            ELSE
+                v_new_member_status := 'INACTIVE';
+            END IF;
+            
+            UPDATE MEMBER 
+            SET MEMBER_STATUS = v_new_member_status,
+                DISCOUNT_MEMBER = 
+                    CASE 
+                        WHEN v_visit_count >= 30 THEN 0.15
+                        WHEN v_visit_count >= 15 THEN 0.10
+                        WHEN v_visit_count >= 5 THEN 0.05
+                        ELSE 0.00
+                    END
+            WHERE CUSTOMER_ID = NEW.CUSTOMER_ID;
+            
+            RAISE NOTICE 'Member updated: Customer %, Visits: %, New Status: %', 
+                NEW.CUSTOMER_ID, v_visit_count, v_new_member_status;
+        END IF;
+        
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER tr_update_member_after_registration
+    AFTER INSERT OR UPDATE ON REGISTRATION
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_update_member_visits();
+
+/*============================================================================
+         View untuk melihat daftar semua ruangan + status sekarang
+=============================================================================*/
+DROP VIEW IF EXISTS v_room_status_today;
+
+CREATE OR REPLACE VIEW v_room_status_today AS
+SELECT 
+    r.ROOM_ID,
+    r.ROOM_TYPE,
+    r.CAPACITY,
+    r.HOURLY_RATE,
+    COALESCE(
+        (SELECT 'OCCUPIED' 
+         FROM REGISTRATION reg 
+         WHERE reg.ROOM_ID = r.ROOM_ID 
+           AND reg.RG_DATE = CURRENT_DATE
+           AND reg.REGISTRATION_STATUS NOT IN ('CANCELLED', 'FINISHED')
+           AND CURRENT_TIMESTAMP BETWEEN reg.START_TIME AND reg.END_TIME),
+        (SELECT 'RESERVED' 
+         FROM RESERVATION res 
+         WHERE res.ROOM_ID = r.ROOM_ID 
+           AND res.RV_DATE = CURRENT_DATE
+           AND CURRENT_TIMESTAMP BETWEEN res.START_TIME AND res.END_TIME),
+        (SELECT 'BOOKED' 
+         FROM (
+             SELECT ROOM_ID FROM REGISTRATION 
+             WHERE ROOM_ID = r.ROOM_ID 
+               AND RG_DATE = CURRENT_DATE
+               AND REGISTRATION_STATUS NOT IN ('CANCELLED', 'FINISHED')
+               AND CURRENT_TIMESTAMP < START_TIME
+             UNION 
+             SELECT ROOM_ID FROM RESERVATION 
+             WHERE ROOM_ID = r.ROOM_ID 
+               AND RV_DATE = CURRENT_DATE
+               AND CURRENT_TIMESTAMP < START_TIME
+         ) AS future_bookings),
+        r.STATUS
+    ) as CURRENT_STATUS,
+    
+    COALESCE(
+        (SELECT c.NAME 
+         FROM REGISTRATION reg 
+         JOIN CUSTOMER c ON reg.CUSTOMER_ID = c.CUSTOMER_ID
+         WHERE reg.ROOM_ID = r.ROOM_ID 
+           AND reg.RG_DATE = CURRENT_DATE
+           AND CURRENT_TIMESTAMP BETWEEN reg.START_TIME AND reg.END_TIME),
+        (SELECT c.NAME 
+         FROM RESERVATION res 
+         JOIN CUSTOMER c ON res.CUSTOMER_ID = c.CUSTOMER_ID
+         WHERE res.ROOM_ID = r.ROOM_ID 
+           AND res.RV_DATE = CURRENT_DATE
+           AND CURRENT_TIMESTAMP BETWEEN res.START_TIME AND res.END_TIME),
+        'TIDAK ADA'
+    ) as CURRENT_CUSTOMER,
+    
+    (SELECT 
+        TO_CHAR(MIN(start_time), 'HH24:MI') || ' - ' || TO_CHAR(MIN(end_time), 'HH24:MI')
+     FROM (
+         SELECT START_TIME, END_TIME 
+         FROM REGISTRATION 
+         WHERE ROOM_ID = r.ROOM_ID 
+           AND RG_DATE = CURRENT_DATE
+           AND REGISTRATION_STATUS NOT IN ('CANCELLED', 'FINISHED')
+           AND START_TIME > CURRENT_TIMESTAMP
+         UNION 
+         SELECT START_TIME, END_TIME 
+         FROM RESERVATION 
+         WHERE ROOM_ID = r.ROOM_ID 
+           AND RV_DATE = CURRENT_DATE
+           AND START_TIME > CURRENT_TIMESTAMP
+     ) AS next_bookings
+    ) as NEXT_BOOKING_TIME
+
+FROM ROOM r
+ORDER BY 
+    CASE COALESCE(
+        (SELECT 'OCCUPIED' FROM REGISTRATION reg WHERE reg.ROOM_ID = r.ROOM_ID 
+         AND reg.RG_DATE = CURRENT_DATE AND CURRENT_TIMESTAMP BETWEEN reg.START_TIME AND reg.END_TIME),
+        (SELECT 'RESERVED' FROM RESERVATION res WHERE res.ROOM_ID = r.ROOM_ID 
+         AND res.RV_DATE = CURRENT_DATE AND CURRENT_TIMESTAMP BETWEEN res.START_TIME AND res.END_TIME),
+        'AVAILABLE'
+    )
+        WHEN 'OCCUPIED' THEN 1
+        WHEN 'RESERVED' THEN 2
+        ELSE 3 
+    END,
+    r.ROOM_ID;
