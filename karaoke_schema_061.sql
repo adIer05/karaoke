@@ -777,6 +777,88 @@ CALL p_cancel_reservation(14);
 CALL p_cancel_reservation(999);
 
 /*============================================================================
+                   Prosedur untuk kasih alternatif jadwal	 
+=============================================================================*/
+DROP PROCEDURE IF EXISTS sp_suggest_alternative_schedule(
+    p_date DATE,
+    p_start TIMESTAMP,
+    p_end TIMESTAMP,
+    p_num_people INTEGER
+)
+
+CREATE OR REPLACE PROCEDURE sp_suggest_alternative_schedule(
+    p_date DATE,
+    p_start TIMESTAMP,
+    p_end TIMESTAMP,
+    p_num_people INTEGER
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    r RECORD;
+    conflict_count INTEGER;
+BEGIN
+    RAISE NOTICE '--- SUGGEST ALTERNATIVE SCHEDULE ---';
+    RAISE NOTICE 'Requested: % to %, % people', p_start, p_end, p_num_people;
+
+    FOR r IN
+        SELECT ROOM_ID, ROOM_TYPE, CAPACITY
+        FROM ROOM
+        WHERE CAPACITY >= p_num_people
+        ORDER BY CAPACITY ASC
+    LOOP
+        SELECT COUNT(*) INTO conflict_count
+        FROM (
+                SELECT room_id, rg_date AS the_date, start_time, end_time
+                FROM REGISTRATION
+                WHERE room_id = r.room_id AND rg_date = p_date
+
+                UNION ALL
+
+                SELECT room_id, rv_date AS the_date, start_time, end_time
+                FROM RESERVATION
+                WHERE room_id = r.room_id AND rv_date = p_date
+             ) AS bookings
+        WHERE (p_start, p_end) OVERLAPS (start_time, end_time);
+
+        IF conflict_count = 0 THEN
+            RAISE NOTICE 'Recommended Room: % (ID=%) | Capacity %',
+                r.room_type, r.room_id, r.capacity;
+
+            RAISE NOTICE 'Suggested Schedule: % → %', p_start, p_end;
+            RETURN;
+        END IF;
+    END LOOP;
+
+    RAISE NOTICE 'No alternative room & schedule available.';
+END;
+$$;
+
+
+-- test di registrasi yang gagal
+CALL sp_create_registration(p_customer_id := 2, 
+							p_room_id := 1, 
+							p_date := '2025-12-01', 
+							p_start := '2025-12-01 17:00:00', 
+							p_end := '2025-12-01 19:00:00', 
+							p_num_people := 5 );
+
+CALL sp_suggest_alternative_schedule(
+    p_date := '2025-12-01',
+    p_start := '2025-12-01 17:00:00',
+    p_end := '2025-12-01 19:00:00',
+    p_num_people := 5
+);
+
+CALL sp_create_registration(p_customer_id := 2, 
+							p_room_id := 6, /* hasil rekomendasi */
+							p_date := '2025-12-01', 
+							p_start := '2025-12-01 17:00:00', 
+							p_end := '2025-12-01 19:00:00', 
+							p_num_people := 5 );
+--sekarang jadi bisa.
+
+/*============================================================================
             Trigger untuk cek kapasitas ruangan ≥ jumlah orang
 =============================================================================*/
 DROP FUNCTION IF EXISTS fn_validate_room_capacity();
