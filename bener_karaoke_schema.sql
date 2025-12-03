@@ -1860,16 +1860,18 @@ ORDER BY
 
 -- Test 1: Reservasi sukses
 CALL create_reservation(
-    1,
-    1,
+    5,
+    6,
     '2025-11-30 10:00',
     '2025-11-30 12:00',
     '2025-11-27',
     'QRIS',
 	 4);
 
+select * from payment;
+
 SELECT * FROM check_room_available(1, '2025-11-30 10:00', '2025-11-30 12:00');
 
-CALL extend_time('RES', 2, 45);
+CALL extend_time('RES', 4, 45);
 
-call pay_reservation_settle(2, 'CARD');
+call pay_reservation_settle(4, 'CARD');
