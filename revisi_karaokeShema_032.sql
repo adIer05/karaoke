@@ -604,49 +604,158 @@ BEFORE INSERT ON payment
 FOR EACH ROW
 EXECUTE FUNCTION trg_payment_calculate_total();
 
--- =============================================================================== --
---                              TEST CASE PAYMENT                                  --
--- =============================================================================== --
-TRUNCATE TABLE PAYMENT RESTART IDENTITY;
-SELECT * FROM PAYMENT;
+-- =========================================
+-- PROCEDURE PERPANJANGAN WAKTU RESERVATION
+-- =========================================
+CREATE OR REPLACE PROCEDURE extend_time(
+    IN p_reservation_id INT,
+    IN p_minutes INT
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_room_id INT;
+    v_start_time TIMESTAMP;
+    v_end_time TIMESTAMP;   
+    v_d_date DATE;
 
--- Test Case 1 – RESERVATION_ID = 1 (REGULAR + MEMBER GOLD + EXTEND)
-/*
-Room: MEDIUM → 75.000 / jam
-Durasi: 2 jam → base_cost = 2 × 75.000 = 150.000
-Diskon member (GOLD 10%):
-	discount_rate = 0,10
-	discount_amount = 10% × 150.000 = 15.000
-	net_after_disc = 150.000 – 15.000 = 135.000
-DP:
-	paid_dp = 45.000 
-	after_dp = 135.000 – 45.000 = 90.000
+    v_hourly_rate  NUMERIC(8,2);
 
-Extend: ext_cost = 25.000
-Total / final:
-	total_cost = base_cost + ext = 150.000 + 25.000 = 175.000
-	final_cost = after_dp + ext = 90.000 + 25.000 = 115.000
-*/
+    v_next_start TIMESTAMP;   -- start_time booking berikutnya 
+    v_max_end TIMESTAMP;   -- batas maksimal end_time (30 menit sebelum next_start)
+    v_new_end TIMESTAMP;   -- END_TIME setelah extend
 
-call pay_reservation_settle(1, 'QRIS');
-SELECT * FROM PAYMENT;
+    v_ext_hours NUMERIC(8,2);
+    v_ext_cost NUMERIC(8,2);
+BEGIN
+    IF p_minutes <= 0 THEN
+        RAISE EXCEPTION 'Extend minutes must be > 0. Given: %', p_minutes;
+    END IF;
 
--- Test Case 2 – RESERVATION_ID = 2 (WALKIN + MEMBER SILVER + TANPA EXTEND)
-/*
-Room: SMALL → 50.000 / jam
-Durasi: 2 jam → base_cost = 2 × 50.000 = 100.000
-Diskon member (Silver 5%):
-	discount_rate = 0,05
-	discount_amount = 5% × 100.000 = 5.000
-	net_after_disc = 100.000 – 5.000 = 95.000
-DP:
-	reservation_type = WALKIN → DP diabaikan
-	paid_dp = 0
-	after_dp = net_after_disc = 95.000
-Extend: ext_cost = 0
-Total / final:
-	total_cost = base_cost + ext = 100.000 + 0 = 100.000
-	final_cost = after_dp + ext = 95.000 + 0 = 95.000
-*/
-call pay_reservation_settle(2, 'QRIS');
-SELECT * FROM PAYMENT;
+    -- 1. Ambil data reservasi
+    SELECT room_id, start_time, end_time, d_date
+    INTO v_room_id, v_start_time, v_end_time, v_d_date
+    FROM reservation
+    WHERE reservation_id = p_reservation_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Reservation % not found', p_reservation_id;
+    END IF;
+
+    -- 2. Ambil tarif ruangan
+    SELECT hourly_rate
+    INTO v_hourly_rate
+    FROM room
+    WHERE room_id = v_room_id;
+
+    IF v_hourly_rate IS NULL THEN
+        RAISE EXCEPTION 'Room % not found or hourly_rate is NULL', v_room_id;
+    END IF;
+
+    -- 3. Hitung END_TIME baru
+    v_new_end := v_end_time + make_interval(mins => p_minutes);
+
+    -- 4. Cari booking berikutnya di ruangan yang sama pada hari yang sama
+    SELECT start_time
+    INTO v_next_start
+    FROM reservation
+    WHERE room_id = v_room_id
+      AND reservation_id <> p_reservation_id
+      AND d_date = v_d_date
+      AND start_time > v_end_time
+    ORDER BY start_time LIMIT 1;
+
+    IF FOUND THEN
+        -- maksimal boleh sampai 30 menit sebelum booking berikutnya
+        v_max_end := v_next_start - INTERVAL '30 minutes';
+
+        IF v_new_end > v_max_end THEN
+            RAISE EXCEPTION
+                'Cannot extend reservation % in room %: requested end % exceeds max allowed % (30 minutes before next booking at %)',
+                p_reservation_id, v_room_id, v_new_end, v_max_end, v_next_start;
+        END IF;
+    END IF;
+
+    -- 5. Hitung biaya perpanjangan
+    v_ext_hours := ROUND( (p_minutes::NUMERIC / 60)::NUMERIC, 2 );
+    v_ext_cost := ROUND( (v_hourly_rate * v_ext_hours)::NUMERIC, 2 );
+
+    -- 6. Simpan ke TIME_EXTEND
+    INSERT INTO time_extend(
+        reservation_id,
+        extension_duration,
+        extension_cost
+    )
+    VALUES (
+        p_reservation_id,
+        ((p_minutes || ' minutes')::interval)::time,  
+        v_ext_cost
+    );
+
+    -- 7. Update END_TIME di RESERVATION
+    UPDATE reservation
+    SET end_time = v_new_end
+    WHERE reservation_id = p_reservation_id;
+
+    -- 8. RAISE NOTICE summary (pakai gaya yang kamu mau)
+    RAISE NOTICE 'Extend RESERVATION ID % in room % by % minutes',
+                 p_reservation_id, v_room_id, p_minutes;
+    RAISE NOTICE 'Old END_TIME: %, New END_TIME: %',
+                 v_end_time, v_new_end;
+
+    IF v_next_start IS NOT NULL THEN
+        RAISE NOTICE 'Next booking in this room starts at: % (min 30 min gap enforced)',
+                     v_next_start;
+    ELSE
+        RAISE NOTICE 'No next booking in this room – extension is only limited by duration requested.';
+    END IF;
+
+    RAISE NOTICE 'Extra cost for this extension: Rp %', v_ext_cost;
+END;
+$$;
+
+-- =========================================
+-- VIEW STATUS MEMBERSHIP CUSTOMER
+-- =========================================
+CREATE OR REPLACE VIEW v_membership_status AS
+SELECT 
+    c.customer_id,
+    c.name AS customer_name,
+    c.no_phone,
+    m.member_status,
+    m.number_of_visits,
+    m.discount_member
+FROM customer c
+LEFT JOIN member m 
+    ON c.customer_id = m.customer_id
+ORDER BY c.customer_id;
+
+-- =========================================
+-- VIEW STATUS MEMBERSHIP CUSTOMER
+-- =========================================
+CREATE OR REPLACE VIEW v_song_popularity AS
+WITH total_play AS (
+    SELECT COUNT(*)::NUMERIC AS total_count
+    FROM plays
+)
+SELECT 
+    s.songs_id,
+    s.title,
+    s.artist,
+    s.genre,
+    s.language,
+    COUNT(p.songs_id) AS total_plays,
+    CASE 
+        WHEN (SELECT total_count FROM total_play) = 0 THEN 0
+        ELSE ROUND(
+            (COUNT(p.songs_id)::NUMERIC 
+                / (SELECT total_count FROM total_play)) * 100,
+            2
+        )
+    END AS popularity_percentage
+FROM songs s
+LEFT JOIN plays p 
+    ON s.songs_id = p.songs_id
+GROUP BY 
+    s.songs_id, s.title, s.artist, s.genre, s.language
+ORDER BY popularity_percentage DESC;
