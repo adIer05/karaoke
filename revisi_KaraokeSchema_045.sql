@@ -1,40 +1,51 @@
--- ================================================================
--- Integrated karaoke schema + functions/procedures/triggers/views
--- Rules:
---  - REGULAR allowed to book <= 7 days ahead (i.e. reservation_date - current_date <= 7)
---  - REGULAR must pay DP = 30% (fixed)
---  - WALKIN no DP required
---  - Conflicts consider TIME_EXTEND (sum of extension_duration)
---  - On rule violation, trigger/procedure issues NOTICE then RAISE EXCEPTION
--- ================================================================
+/*==============================================================*/
+/* DBMS name:      PostgreSQL 9.x                               */
+/* Created on:     12/3/2025 9:34:25 AM                         */
+/*==============================================================*/
 
-/* =========================
-   DROP existing objects (safe to re-run)
-   ========================= */
 drop index IF EXISTS CUSTOMER_PK;
+
 drop table IF EXISTS CUSTOMER CASCADE;
+
 drop index IF EXISTS PART_OF_FK;
+
 drop table IF EXISTS MEMBER CASCADE;
+
 drop index IF EXISTS RESULTS_PAYMENT_RESERVATION_FK;
+
 drop table IF EXISTS PAYMENT CASCADE;
+
 drop index IF EXISTS REFERS_TO_FK;
+
 drop index IF EXISTS PERFORMS_FK;
+
 drop table IF EXISTS PLAYS CASCADE;
+
 drop index IF EXISTS ASSIGNED_FOR_RESERVATION_FK;
+
 drop index IF EXISTS MAKE_RESERVATION_FK;
+
 drop index IF EXISTS RESERVATION_PK;
+
 drop table IF EXISTS RESERVATION CASCADE;
+
 drop index IF EXISTS ROOM_PK;
+
 drop table IF EXISTS ROOM CASCADE;
+
 drop index IF EXISTS SONGS_PK;
+
 drop table IF EXISTS SONGS CASCADE;
+
 drop index IF EXISTS RES_HAS_EXTENSION_FK;
+
 drop index IF EXISTS TIME_EXTEND_PK;
+
 drop table IF EXISTS TIME_EXTEND CASCADE;
 
--- =========================
--- SCHEMA (as provided)
--- =========================
+/*==============================================================*/
+/* Table: CUSTOMER                                              */
+/*==============================================================*/
 create table CUSTOMER (
    CUSTOMER_ID          SERIAL               not null,
    NO_PHONE             VARCHAR(13)          null,
@@ -42,8 +53,17 @@ create table CUSTOMER (
    PEOPLE_COMING        INT4                 null,
    constraint PK_CUSTOMER primary key (CUSTOMER_ID)
 );
-create unique index CUSTOMER_PK on CUSTOMER (CUSTOMER_ID);
 
+/*==============================================================*/
+/* Index: CUSTOMER_PK                                           */
+/*==============================================================*/
+create unique index CUSTOMER_PK on CUSTOMER (
+CUSTOMER_ID
+);
+
+/*==============================================================*/
+/* Table: MEMBER                                                */
+/*==============================================================*/
 create table MEMBER (
    CUSTOMER_ID          SERIAL               not null,
    MEMBER_STATUS        VARCHAR(9)           null,
@@ -51,8 +71,17 @@ create table MEMBER (
    DISCOUNT_MEMBER      FLOAT8               null,
    constraint AK_PK_MEMBER unique (CUSTOMER_ID)
 );
-create index PART_OF_FK on MEMBER (CUSTOMER_ID);
 
+/*==============================================================*/
+/* Index: PART_OF_FK                                            */
+/*==============================================================*/
+create  index PART_OF_FK on MEMBER (
+CUSTOMER_ID
+);
+
+/*==============================================================*/
+/* Table: ROOM                                                  */
+/*==============================================================*/
 create table ROOM (
    ROOM_ID              SERIAL               not null,
    ROOM_TYPE            VARCHAR(10)          null,
@@ -61,8 +90,17 @@ create table ROOM (
    STATUS               VARCHAR(20)          null,
    constraint PK_ROOM primary key (ROOM_ID)
 );
-create unique index ROOM_PK on ROOM (ROOM_ID);
 
+/*==============================================================*/
+/* Index: ROOM_PK                                               */
+/*==============================================================*/
+create unique index ROOM_PK on ROOM (
+ROOM_ID
+);
+
+/*==============================================================*/
+/* Table: SONGS                                                 */
+/*==============================================================*/
 create table SONGS (
    SONGS_ID             SERIAL               not null,
    TITLE                VARCHAR(250)         null,
@@ -73,8 +111,17 @@ create table SONGS (
    LYRICS               TEXT                 null,
    constraint PK_SONGS primary key (SONGS_ID)
 );
-create unique index SONGS_PK on SONGS (SONGS_ID);
 
+/*==============================================================*/
+/* Index: SONGS_PK                                              */
+/*==============================================================*/
+create unique index SONGS_PK on SONGS (
+SONGS_ID
+);
+
+/*==============================================================*/
+/* Table: RESERVATION                                           */
+/*==============================================================*/
 create table RESERVATION (
    CUSTOMER_ID          INT4                 not null,
    RESERVATION_ID       SERIAL               not null,
@@ -89,10 +136,31 @@ create table RESERVATION (
    RESERVATION_DATE     DATE                 null,
    constraint PK_RESERVATION primary key (RESERVATION_ID)
 );
-create unique index RESERVATION_PK on RESERVATION (RESERVATION_ID);
-create index MAKE_RESERVATION_FK on RESERVATION (CUSTOMER_ID);
-create index ASSIGNED_FOR_RESERVATION_FK on RESERVATION (ROOM_ID);
 
+/*==============================================================*/
+/* Index: RESERVATION_PK                                        */
+/*==============================================================*/
+create unique index RESERVATION_PK on RESERVATION (
+RESERVATION_ID
+);
+
+/*==============================================================*/
+/* Index: MAKE_RESERVATION_FK                                   */
+/*==============================================================*/
+create  index MAKE_RESERVATION_FK on RESERVATION (
+CUSTOMER_ID
+);
+
+/*==============================================================*/
+/* Index: ASSIGNED_FOR_RESERVATION_FK                           */
+/*==============================================================*/
+create  index ASSIGNED_FOR_RESERVATION_FK on RESERVATION (
+ROOM_ID
+);
+
+/*==============================================================*/
+/* Table: TIME_EXTEND                                           */
+/*==============================================================*/
 create table TIME_EXTEND (
    RESERVATION_ID       INT4                 not null,
    EXTEND_ID            SERIAL               not null,
@@ -100,9 +168,24 @@ create table TIME_EXTEND (
    EXTENSION_COST       NUMERIC(8,2)         null,
    constraint PK_TIME_EXTEND primary key (EXTEND_ID)
 );
-create unique index TIME_EXTEND_PK on TIME_EXTEND (EXTEND_ID);
-create index RES_HAS_EXTENSION_FK on TIME_EXTEND (RESERVATION_ID);
 
+/*==============================================================*/
+/* Index: TIME_EXTEND_PK                                        */
+/*==============================================================*/
+create unique index TIME_EXTEND_PK on TIME_EXTEND (
+EXTEND_ID
+);
+
+/*==============================================================*/
+/* Index: RES_HAS_EXTENSION_FK                                  */
+/*==============================================================*/
+create  index RES_HAS_EXTENSION_FK on TIME_EXTEND (
+RESERVATION_ID
+);
+
+/*==============================================================*/
+/* Table: PAYMENT                                               */
+/*==============================================================*/
 create table PAYMENT (
    PAYMENT_ID           SERIAL               not null,
    RESERVATION_ID       INT4                 not null,
@@ -113,16 +196,37 @@ create table PAYMENT (
    PAYMENT_TIME         TIMESTAMP            null,
    constraint PK_PAYMENT primary key (PAYMENT_ID)
 );
-create index RESULTS_PAYMENT_RESERVATION_FK on PAYMENT (RESERVATION_ID);
 
+/*==============================================================*/
+/* Index: RESULTS_PAYMENT_RESERVATION_FK                        */
+/*==============================================================*/
+create  index RESULTS_PAYMENT_RESERVATION_FK on PAYMENT (
+RESERVATION_ID
+);
+
+/*==============================================================*/
+/* Table: PLAYS                                                 */
+/*==============================================================*/
 create table PLAYS (
    CUSTOMER_ID          INT4                 not null,
    SONGS_ID             INT4                 not null,
    SONG_START_TIME      TIMESTAMP            null,
    PLAY_DURATION        TIME                 null
 );
-create index PERFORMS_FK on PLAYS (CUSTOMER_ID);
-create index REFERS_TO_FK on PLAYS (SONGS_ID);
+
+/*==============================================================*/
+/* Index: PERFORMS_FK                                           */
+/*==============================================================*/
+create  index PERFORMS_FK on PLAYS (
+CUSTOMER_ID
+);
+
+/*==============================================================*/
+/* Index: REFERS_TO_FK                                          */
+/*==============================================================*/
+create  index REFERS_TO_FK on PLAYS (
+SONGS_ID
+);
 
 alter table MEMBER
    add constraint FK_MEMBER_PART_OF_CUSTOMER foreign key (CUSTOMER_ID)
@@ -159,27 +263,39 @@ alter table TIME_EXTEND
       references RESERVATION (RESERVATION_ID)
       on delete restrict on update restrict;
 
--- =========================
--- sample data (from your files)
--- =========================
+-- ===========================
+-- INSERT INTO CUSTOMER (3)
+-- ===========================
 INSERT INTO CUSTOMER (NO_PHONE, NAME, PEOPLE_COMING) VALUES 
 ('081234567890', 'Shofi', 3),
 ('082198765432', 'Hana', 2),
 ('081345678901', 'Reida', 4),
 ('081456789012', 'alfa', 4);
+SELECT * FROM CUSTOMER;
 
+-- ===========================
+-- INSERT INTO MEMBER (1)
+-- ===========================
 INSERT INTO MEMBER (CUSTOMER_ID, MEMBER_STATUS, NUMBER_OF_VISITS, DISCOUNT_MEMBER) VALUES 
-(1, 'GOLD', 12, 0.10),
+(1, 'Silver', 12, 0.10),
 (2,'Silver',5,0.05),
 (3,'INACTIVE',0,0.00),
 (4,'Platinum',30,0.15);
+SELECT * FROM MEMBER;
 
+-- ===========================
+-- INSERT INTO ROOM (4)
+-- ===========================
 INSERT INTO ROOM (ROOM_TYPE, CAPACITY, HOURLY_RATE, STATUS) VALUES
 ('SMALL',4,50000,'AVAILABLE'),
 ('MEDIUM',6,75000,'AVAILABLE'),
 ('LARGE',8,100000,'AVAILABLE'),
 ('VIP',10,150000,'AVAILABLE');
+SELECT * FROM ROOM;
 
+-- ===========================
+-- INSERT INTO SONGS (6)
+-- ===========================
 INSERT INTO SONGS (TITLE, ARTIST, GENRE, LANGUAGE, DURATION, LYRICS) VALUES
 ('Take A Chance With Me', 'NIKI', 'Pop / R&B', 'English', '00:03:45', 'Lyrics not included'),
 ('I Pray', 'LANY', 'Pop', 'English', '00:03:30', 'Lyrics not included'),
@@ -187,87 +303,43 @@ INSERT INTO SONGS (TITLE, ARTIST, GENRE, LANGUAGE, DURATION, LYRICS) VALUES
 ('TAROT', '.Feast', 'Rock / Alternative', 'Indonesian', '00:04:20', 'Lyrics not included'),
 ('Rumah Ke Rumah', 'Hindia', 'Indie', 'Indonesian', '00:04:28', 'Lyrics not included'),
 ('Berdansalah, Karir Ini Tak Ada Artinya', 'Hindia', 'Alternative / Indie', 'Indonesian', '00:04:10', 'Lyrics not included');
+SELECT * FROM SONGS;
 
+-- ===========================
+-- INSERT INTO RESERVATION (2)
+-- ===========================
 INSERT INTO RESERVATION 
 (CUSTOMER_ID, ROOM_ID, D_DATE, START_TIME, END_TIME, RESERVATION_STATUS, RESERVATION_TYPE, PCT_DP, PAID_DP, RESERVATION_DATE)
 VALUES
 (1, 2, '2025-12-03', '2025-12-03 14:00', '2025-12-03 16:00', 'ONGOING', 'REGULAR', 0.3, 45000, '2025-12-01'),
 (2, 1, '2025-12-03', '2025-12-03 15:00', '2025-12-03 17:00', 'ONGOING', 'WALKIN', 0, 0, '2025-12-03');
+SELECT * FROM RESERVATION;
 
+-- ===========================
+-- INSERT INTO TIME EXTEND (1)
+-- ===========================
 INSERT INTO TIME_EXTEND (RESERVATION_ID, EXTENSION_DURATION, EXTENSION_COST) VALUES
 (1, '00:30:00', 25000);
+SELECT * FROM TIME_EXTEND;
 
+-- ===========================
+-- INSERT INTO PAYMENT (2)
+-- ===========================
 INSERT INTO PAYMENT (RESERVATION_ID, PAYMENT_METHOD, TOTAL_COST, DISCOUNT_MEMBER, FINAL_COST, PAYMENT_TIME)
 VALUES
 (1, 'CASH', 125000, 0.1, 112500, '2025-12-03 16:10'),
 (2, 'QRIS', 100000, 0, 100000, '2025-12-03 17:10');
+SELECT * FROM PAYMENT;
 
+-- ===========================
+-- INSERT INTO PLAYS (3)
+-- ===========================
 INSERT INTO PLAYS (CUSTOMER_ID, SONGS_ID, SONG_START_TIME, PLAY_DURATION)
 VALUES
 (1, 1, '2025-12-03 14:05', '00:04:55'),
 (1, 3, '2025-12-03 14:12', '00:03:25'),
 (2, 2, '2025-12-03 15:10', '00:03:30');
-
--- ============================================================
--- Utility functions (from files + merged logic)
--- ============================================================
-
--- get discount for member
-CREATE OR REPLACE FUNCTION get_discount_member(p_customer_id INT)
-RETURNS FLOAT8
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_discount FLOAT8;
-BEGIN
-    SELECT COALESCE(discount_member, 0)
-    INTO v_discount
-    FROM member
-    WHERE customer_id = p_customer_id;
-
-    IF NOT FOUND THEN
-        v_discount := 0;
-    END IF;
-
-    RETURN v_discount;
-END;
-$$;
-
--- fixed DP calculation: REGULAR -> 30% fixed; WALKIN -> 0
-CREATE OR REPLACE FUNCTION calculate_dp_fixed(
-    p_reservation_type VARCHAR,
-    p_base_cost NUMERIC(12,2)
-)
-RETURNS NUMERIC(12,2)
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_dp_amount NUMERIC(12,2);
-BEGIN
-    IF UPPER(COALESCE(p_reservation_type,'') ) = 'REGULAR' THEN
-        v_dp_amount := ROUND(p_base_cost * 0.30, 2); -- fixed 30%
-    ELSE
-        v_dp_amount := 0;
-    END IF;
-    RETURN v_dp_amount;
-END;
-$$;
-
--- compute final cost after member discount
-CREATE OR REPLACE FUNCTION calculate_total_payment(
-    p_total_cost NUMERIC(12,2),
-    p_discount_member FLOAT8
-)
-RETURNS NUMERIC(12,2)
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_final NUMERIC(12,2);
-BEGIN
-    v_final := ROUND((p_total_cost - (p_total_cost * COALESCE(p_discount_member,0))::NUMERIC), 2);
-    RETURN v_final;
-END;
-$$;
+SELECT * FROM PLAYS;
 
 -- ============================================================
 -- Function: fn_check_room_available 
@@ -333,175 +405,148 @@ $$;
 -- Procedure: sp_create_reservation 
 -- ============================================================
 CREATE OR REPLACE PROCEDURE sp_create_reservation(
-    p_customer_id      INT,
-    p_room_id          INT,
-    p_d_date           DATE,
-    p_start_time       TIMESTAMP,
-    p_end_time         TIMESTAMP,
+    p_customer_id    INT,
+    p_room_id        INT,
+    p_d_date         DATE,
+    p_start_time     TIMESTAMP,
+    p_end_time       TIMESTAMP,
     p_reservation_type VARCHAR DEFAULT 'REGULAR',
-    p_people_coming    INT DEFAULT NULL,
-    p_payment_method   VARCHAR DEFAULT NULL
+    p_people_coming  INT DEFAULT NULL,
+    p_payment_method VARCHAR DEFAULT NULL
 )
 LANGUAGE plpgsql
 AS $$
 DECLARE
     v_capacity INT;
     v_hourly_rate NUMERIC(12,2);
-
     v_duration_hours NUMERIC;
     v_base_cost NUMERIC(12,2);
-
     v_days_until INT;
-
     v_is_available BOOLEAN;
-    v_conf_count  INT;
-    v_conf_from   TEXT;
-
+    v_conf_count INT;
+    v_conf_from TEXT;
     v_dp NUMERIC(12,2);
     v_reservation_id INT;
-
     v_payment_id INT;
+    v_customer_name TEXT;
 BEGIN
-    ---------------------------------------------------------
-    -- 1. VALIDASI CUSTOMER & ROOM EXIST
-    ---------------------------------------------------------
-    PERFORM 1 FROM customer WHERE customer_id = p_customer_id;
+    -- Customer exist check
+    SELECT name INTO v_customer_name FROM customer WHERE customer_id = p_customer_id;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Customer % not found', p_customer_id;
     END IF;
 
-    SELECT capacity, hourly_rate
-    INTO v_capacity, v_hourly_rate
+    -- Room info
+    SELECT capacity, hourly_rate INTO v_capacity, v_hourly_rate
     FROM room WHERE room_id = p_room_id;
-
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Room % not found', p_room_id;
     END IF;
 
-    ---------------------------------------------------------
-    -- 2. VALIDASI WAKTU
-    ---------------------------------------------------------
+    -- Time validation
     IF p_end_time <= p_start_time THEN
-        RAISE NOTICE 'Invalid time range';
         RAISE EXCEPTION 'end_time must be after start_time';
     END IF;
 
-    ---------------------------------------------------------
-    -- 3. VALIDASI KAPASITAS
-    ---------------------------------------------------------
+    -- Capacity check
     IF p_people_coming IS NOT NULL THEN
         IF p_people_coming <= 0 THEN
             RAISE EXCEPTION 'people_coming must be > 0';
         END IF;
-
         IF p_people_coming > v_capacity THEN
-            RAISE NOTICE 'Capacity violation: room capacity % < people %', v_capacity, p_people_coming;
+            RAISE NOTICE 'Capacity violation: % people > room capacity %', p_people_coming, v_capacity;
             RAISE EXCEPTION 'Room capacity insufficient';
         END IF;
-
-        UPDATE customer
-        SET people_coming = p_people_coming
-        WHERE customer_id = p_customer_id;
+        UPDATE customer SET people_coming = p_people_coming WHERE customer_id = p_customer_id;
     END IF;
 
-    ---------------------------------------------------------
-    -- 4. CHECK ROOM AVAILABILITY
-    ---------------------------------------------------------
+    -- Availability check
     SELECT is_available, conflict_count, conflict_from
     INTO v_is_available, v_conf_count, v_conf_from
     FROM fn_check_room_available(p_room_id, p_start_time, p_end_time);
 
     IF NOT v_is_available THEN
-        RAISE NOTICE 'Room unavailable: % (conflicts=%)', v_conf_from, v_conf_count;
-        RAISE EXCEPTION 'Room % not available in requested time slot', p_room_id;
+        RAISE NOTICE 'Availability failed: %', v_conf_from;
+        RAISE EXCEPTION 'Room unavailable';
     END IF;
 
-    ---------------------------------------------------------
-    -- 5. HITUNG DURASI DAN BASE COST
-    ---------------------------------------------------------
-    v_duration_hours := EXTRACT(EPOCH FROM (p_end_time - p_start_time)) / 3600.0;
-    v_base_cost := ROUND(v_hourly_rate * v_duration_hours, 2);
+    -- Cost calculation
+    v_duration_hours := extract(epoch from (p_end_time - p_start_time)) / 3600.0;
+    v_base_cost := round(v_hourly_rate * v_duration_hours, 2);
 
-    ---------------------------------------------------------
-    -- 6. REGULAR RULES → H–7 + DP 30%
-    ---------------------------------------------------------
-    v_days_until := (p_d_date - CURRENT_DATE);
+    -- H-7 rule
+    v_days_until := (p_d_date - current_date);
 
-    IF UPPER(COALESCE(p_reservation_type,'REGULAR')) = 'REGULAR' THEN
-        -- REGULAR tidak boleh booking lebih dari H–7
+    IF upper(p_reservation_type) = 'REGULAR' THEN
         IF v_days_until > 7 THEN
-            RAISE NOTICE 'REGULAR booking beyond H-7 (days_until=%)', v_days_until;
-            RAISE EXCEPTION 'REGULAR booking allowed only ≤ 7 days before D_DATE';
+            RAISE NOTICE 'REGULAR booking outside allowed window (H-7). days_until=%', v_days_until;
+            RAISE EXCEPTION 'REGULAR only allowed ≤ 7 days from today';
         END IF;
 
-        -- Hitung DP 30%
         v_dp := ROUND(v_base_cost * 0.30, 2);
     ELSE
-        -- WALKIN TANPA DP
         v_dp := 0;
     END IF;
 
-    ---------------------------------------------------------
-    -- 7. INSERT RESERVATION
-    ---------------------------------------------------------
-    IF p_start_time <= NOW() AND p_end_time >= NOW() THEN
-        -- booking sedang berlangsung
-        INSERT INTO reservation (
-            customer_id, room_id, d_date, start_time, end_time,
-            reservation_status, reservation_type, pct_dp, paid_dp, reservation_date
-        ) VALUES (
-            p_customer_id, p_room_id, p_d_date, p_start_time, p_end_time,
-            'ONGOING', UPPER(p_reservation_type),
-            CASE WHEN v_dp > 0 THEN 0.3 ELSE 0 END,
-            v_dp,
-            CURRENT_DATE
-        )
+    -- Insert reservation
+    IF p_start_time <= now() AND p_end_time >= now() THEN
+        INSERT INTO reservation
+        (customer_id, room_id, d_date, start_time, end_time,
+         reservation_status, reservation_type, pct_dp, paid_dp, reservation_date)
+        VALUES
+        (p_customer_id, p_room_id, p_d_date, p_start_time, p_end_time,
+         'ONGOING', upper(p_reservation_type), 
+         CASE WHEN v_dp > 0 THEN 0.3 ELSE 0 END, v_dp, CURRENT_DATE)
         RETURNING reservation_id INTO v_reservation_id;
 
         UPDATE room SET status = 'OCCUPIED' WHERE room_id = p_room_id;
-
     ELSE
-        -- booking masa depan
-        INSERT INTO reservation (
-            customer_id, room_id, d_date, start_time, end_time,
-            reservation_status, reservation_type, pct_dp, paid_dp, reservation_date
-        ) VALUES (
-            p_customer_id, p_room_id, p_d_date, p_start_time, p_end_time,
-            'CONFIRMED', UPPER(p_reservation_type),
-            CASE WHEN v_dp > 0 THEN 0.3 ELSE 0 END,
-            v_dp,
-            CURRENT_DATE
-        )
+        INSERT INTO reservation
+        (customer_id, room_id, d_date, start_time, end_time,
+         reservation_status, reservation_type, pct_dp, paid_dp, reservation_date)
+        VALUES
+        (p_customer_id, p_room_id, p_d_date, p_start_time, p_end_time,
+         'CONFIRMED', upper(p_reservation_type), 
+         CASE WHEN v_dp > 0 THEN 0.3 ELSE 0 END, v_dp, CURRENT_DATE)
         RETURNING reservation_id INTO v_reservation_id;
 
         UPDATE room SET status = 'RESERVED' WHERE room_id = p_room_id;
     END IF;
 
-    RAISE NOTICE 'Reservation created: ID=% (type=%, cost=%, dp=%)',
-        v_reservation_id, p_reservation_type, v_base_cost, v_dp;
-
-    ---------------------------------------------------------
-    -- 8. INSERT PAYMENT UNTUK DP (JIKA ADA)
-    ---------------------------------------------------------
+    -- DP Payment auto insert
     IF v_dp > 0 THEN
-        INSERT INTO payment (
-            reservation_id, payment_method, total_cost,
-            discount_member, final_cost, payment_time
-        )
-        VALUES (
-            v_reservation_id,
-            p_payment_method,
-            v_dp, 0, v_dp,
-            NOW()
-        )
+        INSERT INTO payment (reservation_id, payment_method, total_cost, discount_member, final_cost, payment_time)
+        VALUES (v_reservation_id, p_payment_method, v_dp, 0, v_dp, now())
         RETURNING payment_id INTO v_payment_id;
+    END IF;
 
-        RAISE NOTICE 'DP Payment recorded: payment_id=%, amount=%',
-            v_payment_id, v_dp;
+    ----------------------------------------------------------------------
+    -- SUMMARY FOR REGULAR 
+    ----------------------------------------------------------------------
+    IF UPPER(p_reservation_type) = 'REGULAR' THEN
+        RAISE NOTICE '=================================================';
+        RAISE NOTICE '          REGULAR RESERVATION SUMMARY           ';
+        RAISE NOTICE '=================================================';
+        RAISE NOTICE 'Reservation ID       : %', v_reservation_id;
+        RAISE NOTICE 'Customer Name        : %', v_customer_name;
+        RAISE NOTICE 'People Coming        : % (Room Capacity: %)', p_people_coming, v_capacity;
+        RAISE NOTICE '--------------------------------------------------';
+        RAISE NOTICE 'Room ID              : %', p_room_id;
+        RAISE NOTICE 'Hourly Rate          : Rp %', v_hourly_rate;
+        RAISE NOTICE 'Base Cost            : Rp %', v_base_cost;
+        RAISE NOTICE 'DP 30%% Required      : Rp %', v_dp;
+        RAISE NOTICE 'Reservation Type     : REGULAR';
+        RAISE NOTICE '-------------------------------------------------';
+        RAISE NOTICE 'Date                 : %', p_d_date;
+        RAISE NOTICE 'Start Time           : %', p_start_time::time;
+        RAISE NOTICE 'End Time             : %', p_end_time::time;
+        RAISE NOTICE 'Duration (Hours)     : %', ROUND(v_duration_hours, 2);
+        RAISE NOTICE '=================================================';
     END IF;
 
 END;
 $$;
+
 
 -- ============================================================
 -- Function Check Room
@@ -717,7 +762,7 @@ CALL sp_create_reservation(
     '2025-12-20 12:00',      -- end_time
     'REGULAR',               -- reservation_type
     3,                       -- people coming
-    'CASH'                   -- payment method
+    'QRIS'                   -- payment method
 );
 
 
@@ -730,7 +775,7 @@ CALL sp_create_reservation(
     '2025-12-10 12:00',
     'REGULAR',
     3,
-    'CASH'
+    'QRIS'
 );
 
 -- Gagal Overlap
@@ -742,7 +787,7 @@ CALL sp_create_reservation(
     '2025-12-10 13:00',
     'REGULAR',
     3,
-    'CASH'
+    'QRIS'
 );
 
 select * from reservation
